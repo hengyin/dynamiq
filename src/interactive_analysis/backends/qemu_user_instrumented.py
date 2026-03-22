@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -24,11 +26,34 @@ class QemuUserInstrumentedBackend:
         instrumentation_rpc_client: InstrumentationRpcClient | None = None,
         process_runner: QemuUserProcessRunner | None = None,
     ) -> None:
-        self._capabilities = BackendCapabilities(
+        self._capabilities = self._default_capabilities()
+        self._qmp = qmp_client
+        self._controller = QmpController(qmp_client) if qmp_client is not None else None
+        self._instrumentation = instrumentation_client
+        self._instrumentation_rpc = instrumentation_rpc_client
+        self._process_runner = process_runner
+        self._started = False
+        self._state: dict[str, Any] = {
+            "session_status": "not_started",
+            "backend": "qemu_user_instrumented",
+            "launched_qemu_user_path": None,
+            "rpc_protocol_version": None,
+            "rpc_capabilities": {},
+            "recent_events": [],
+            "ingestion_stats": {},
+            "capabilities": self._capabilities.to_dict(),
+        }
+        self._trace: deque[dict[str, Any]] = deque(maxlen=4096)
+        self._snapshots: dict[str, dict[str, Any]] = {}
+        self._auto_socket_root: Path | None = None
+
+    @staticmethod
+    def _default_capabilities() -> BackendCapabilities:
+        return BackendCapabilities(
             pause_resume=True,
             read_registers=True,
             read_memory=True,
-            disassemble=False,
+            disassemble=True,
             list_memory_maps=True,
             take_snapshot=False,
             restore_snapshot=False,
@@ -39,23 +64,6 @@ class QemuUserInstrumentedBackend:
             run_until_address=True,
             single_step=True,
         )
-        self._qmp = qmp_client
-        self._controller = QmpController(qmp_client) if qmp_client is not None else None
-        self._instrumentation = instrumentation_client
-        self._instrumentation_rpc = instrumentation_rpc_client
-        self._process_runner = process_runner
-        self._started = False
-        self._state: dict[str, Any] = {
-            "session_status": "not_started",
-            "backend": "qemu_user_instrumented",
-            "rpc_protocol_version": None,
-            "rpc_capabilities": {},
-            "recent_events": [],
-            "ingestion_stats": {},
-            "capabilities": self._capabilities.to_dict(),
-        }
-        self._trace: deque[dict[str, Any]] = deque(maxlen=4096)
-        self._snapshots: dict[str, dict[str, Any]] = {}
 
     def start(
         self,
@@ -65,6 +73,9 @@ class QemuUserInstrumentedBackend:
         qemu_config: dict[str, Any] | None = None,
     ) -> None:
         qemu_config = dict(qemu_config or {})
+        self._capabilities = self._default_capabilities()
+        if qemu_config.get("launch"):
+            qemu_config = self._ensure_launch_sockets(qemu_config)
         if qemu_config.get("launch"):
             if self._process_runner is None:
                 self._process_runner = QemuUserProcessRunner()
@@ -103,11 +114,7 @@ class QemuUserInstrumentedBackend:
             if self._instrumentation_rpc is None:
                 self._capabilities.run_until_address = False
                 self._capabilities.single_step = False
-        overrides = qemu_config.get("capabilities_override")
-        if overrides:
-            for key, value in dict(overrides).items():
-                if hasattr(self._capabilities, key):
-                    setattr(self._capabilities, key, bool(value))
+        overrides = dict(qemu_config.get("capabilities_override") or {})
         if qemu_config.get("launch"):
             if self._instrumentation is not None:
                 socket_path = getattr(self._instrumentation, "socket_path", None)
@@ -141,12 +148,21 @@ class QemuUserInstrumentedBackend:
             rpc_caps = self._rpc_request("capabilities")
             self._validate_rpc_capabilities(rpc_caps)
             self._apply_rpc_capabilities(rpc_caps)
+        if overrides:
+            for key, value in overrides.items():
+                if hasattr(self._capabilities, key):
+                    setattr(self._capabilities, key, bool(value))
+        launched_qemu_user_path = None
+        if self._process_runner is not None and self._process_runner.config is not None:
+            launched_qemu_user_path = self._process_runner.config.qemu_user_path
         self._state.update(
             {
                 "session_status": "idle",
                 "target": target,
                 "args": list(args),
                 "cwd": cwd,
+                "launched_qemu_user_path": launched_qemu_user_path,
+                "instrumentation_rpc_socket_path": qemu_config.get("instrumentation_rpc_socket_path"),
                 "rpc_protocol_version": self._RPC_PROTOCOL_VERSION if self._instrumentation_rpc is not None else None,
                 "rpc_capabilities": dict(rpc_caps.get("capabilities", {})) if self._instrumentation_rpc is not None else {},
                 "recent_events": [],
@@ -286,6 +302,34 @@ class QemuUserInstrumentedBackend:
             self._state["pc"] = pc
         return self._response(result)
 
+    def write_stdin(self, data: str) -> dict[str, Any]:
+        self._require_started()
+        if self._process_runner is None:
+            raise UnsupportedOperationError("backend does not have a launched process")
+        if self._state.get("session_status") != "running":
+            raise InvalidStateError("session is paused; call resume before write_stdin")
+        written = self._process_runner.write_stdin(data)
+        return self._response({"written": written})
+
+    def close_stdin(self) -> dict[str, Any]:
+        self._require_started()
+        if self._process_runner is None:
+            raise UnsupportedOperationError("backend does not have a launched process")
+        self._process_runner.close_stdin()
+        return self._response({})
+
+    def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
+        self._require_started()
+        if self._process_runner is None:
+            raise UnsupportedOperationError("backend does not have a launched process")
+        return self._response(self._process_runner.read_stdout(cursor=cursor, max_chars=max_chars))
+
+    def read_stderr(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
+        self._require_started()
+        if self._process_runner is None:
+            raise UnsupportedOperationError("backend does not have a launched process")
+        return self._response(self._process_runner.read_stderr(cursor=cursor, max_chars=max_chars))
+
     def get_registers(self, names: list[str] | None = None) -> dict[str, Any]:
         self._require_started()
         snapshot = RegisterSnapshot.from_rpc_result(self._rpc_request("get_registers", {"names": list(names or [])}))
@@ -385,14 +429,15 @@ class QemuUserInstrumentedBackend:
         return self._response({"filters": config})
 
     def get_state(self) -> dict[str, Any]:
-        if self._instrumentation_rpc is not None and self._started:
+        self._sync_process_state()
+        if self._process_runner is None and self._instrumentation_rpc is not None and self._started:
             try:
                 status = self._instrumentation_rpc.request("query_status")
             except Exception:
                 status = None
             if status and "status" in status:
                 self._state["session_status"] = status["status"]
-        elif self._controller is not None and self._started:
+        elif self._process_runner is None and self._controller is not None and self._started:
             try:
                 status = self._controller.query_status()
             except Exception:
@@ -415,10 +460,25 @@ class QemuUserInstrumentedBackend:
             self._controller.close()
         if self._process_runner is not None:
             self._process_runner.close()
+        if self._auto_socket_root is not None:
+            shutil.rmtree(self._auto_socket_root, ignore_errors=True)
+            self._auto_socket_root = None
+        self._instrumentation = None
+        self._instrumentation_rpc = None
+        self._qmp = None
+        self._controller = None
+        self._process_runner = None
+        self._capabilities = self._default_capabilities()
         self._started = False
         self._state["session_status"] = "closed"
+        self._state["launched_qemu_user_path"] = None
+        self._state["instrumentation_rpc_socket_path"] = None
+        self._state["rpc_protocol_version"] = None
+        self._state["rpc_capabilities"] = {}
+        self._state["capabilities"] = self._capabilities.to_dict()
 
     def _response(self, result: dict[str, Any]) -> dict[str, Any]:
+        self._sync_process_state()
         if self._instrumentation is not None:
             self._refresh_recent_events()
         return {"state": dict(self._state), "result": result}
@@ -471,7 +531,7 @@ class QemuUserInstrumentedBackend:
             return
         for name in self._capabilities.to_dict().keys():
             if name in caps and isinstance(caps[name], bool):
-                setattr(self._capabilities, name, getattr(self._capabilities, name) and caps[name])
+                setattr(self._capabilities, name, caps[name])
 
     @staticmethod
     def _wait_for_socket_path(socket_path: str, timeout: float) -> None:
@@ -482,3 +542,35 @@ class QemuUserInstrumentedBackend:
                 return
             time.sleep(0.05)
         raise SessionTimeoutError(f"timed out waiting for socket: {socket_path}")
+
+    def _sync_process_state(self) -> None:
+        if self._process_runner is None:
+            return
+        process = self._process_runner.process
+        if process is None:
+            return
+        returncode = process.poll()
+        if returncode is None:
+            return
+        self._state["session_status"] = "exited"
+        if returncode < 0:
+            self._state["exit_signal"] = f"SIG{-returncode}"
+            self._state["exit_code"] = None
+            self._state["stop_reason"] = "signaled"
+        else:
+            self._state["exit_code"] = int(returncode)
+            self._state["exit_signal"] = None
+            self._state["stop_reason"] = "exited"
+
+    def _ensure_launch_sockets(self, qemu_config: dict[str, Any]) -> dict[str, Any]:
+        if qemu_config.get("instrumentation_rpc_socket_path"):
+            return qemu_config
+        if self._instrumentation_rpc is not None:
+            socket_path = getattr(self._instrumentation_rpc, "socket_path", None)
+            if isinstance(socket_path, str) and socket_path:
+                qemu_config["instrumentation_rpc_socket_path"] = socket_path
+                return qemu_config
+        root = Path(tempfile.mkdtemp(prefix="ia-qemu-rpc-"))
+        self._auto_socket_root = root
+        qemu_config["instrumentation_rpc_socket_path"] = str(root / "rpc.sock")
+        return qemu_config

@@ -109,6 +109,8 @@ Current tools exposed:
 - `session_close`
 - `capabilities`
 - `get_state`
+- `resume`
+- `pause`
 - `get_registers`
 - `disassemble`
 - `read_memory`
@@ -116,3 +118,65 @@ Current tools exposed:
 - `run_until_address`
 - `step`
 - `advance_basic_blocks`
+- `write_stdin`
+- `close_stdin`
+- `read_stdout`
+- `read_stderr`
+
+### MCP quickstart for interactive stdin/stdout
+
+Use this order for interactive programs:
+
+1. `session_start`
+2. `resume`
+3. one or more `write_stdin`
+4. `close_stdin` (if program expects EOF)
+5. poll `read_stdout` and `read_stderr`
+
+Example `tools/call` arguments:
+
+- `session_start`
+```json
+{
+  "target": "/home/heng/work2/KPRCA_00021",
+  "cwd": "/home/heng/work2"
+}
+```
+
+- `resume`
+```json
+{
+  "timeout": 5.0
+}
+```
+
+- `write_stdin` (required `data`)
+```json
+{
+  "data": "1\n"
+}
+```
+
+- `close_stdin`
+```json
+{}
+```
+
+- `read_stdout` / `read_stderr`
+```json
+{
+  "cursor": 0,
+  "max_chars": 4096
+}
+```
+
+`read_stdout` and `read_stderr` return `data`, `cursor`, and `eof`. Reuse returned `cursor` for the next poll.
+
+### MCP troubleshooting
+
+- `write_stdin` appears stuck:
+  Call includes no `data`. Always send `{"data":"...\\n"}`.
+- Session is `idle` and target is not running:
+  Use `session_start` (MCP now defaults to launch mode), then `resume`.
+- Large multiline payloads fail in tool UI:
+  Send escaped newlines or split into multiple `write_stdin` calls.

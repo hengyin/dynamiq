@@ -1,9 +1,25 @@
 from __future__ import annotations
 
+import fcntl
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+
+def resolve_qemu_user_path(qemu_config: dict[str, Any]) -> str:
+    configured = qemu_config.get("qemu_user_path")
+    if configured:
+        return str(configured)
+    preferred = Path.home() / "git" / "qemu" / "build-ia" / "qemu-x86_64"
+    if preferred.exists():
+        return str(preferred)
+    discovered = shutil.which("qemu-x86_64")
+    if discovered is not None:
+        return discovered
+    return "qemu-x86_64"
 
 
 @dataclass(slots=True)
@@ -28,7 +44,7 @@ class QemuUserLaunchConfig:
     ) -> "QemuUserLaunchConfig":
         qemu_config = dict(qemu_config or {})
         return cls(
-            qemu_user_path=str(qemu_config.get("qemu_user_path", "qemu-x86_64")),
+            qemu_user_path=resolve_qemu_user_path(qemu_config),
             target=target,
             args=list(args or []),
             cwd=cwd,
@@ -71,6 +87,8 @@ class QemuUserProcessRunner:
     def __init__(self) -> None:
         self._process: subprocess.Popen[str] | None = None
         self._config: QemuUserLaunchConfig | None = None
+        self._stdout_buffer = ""
+        self._stderr_buffer = ""
 
     @property
     def running(self) -> bool:
@@ -80,19 +98,29 @@ class QemuUserProcessRunner:
     def process(self) -> subprocess.Popen[str] | None:
         return self._process
 
+    @property
+    def config(self) -> QemuUserLaunchConfig | None:
+        return self._config
+
     def start(self, config: QemuUserLaunchConfig) -> subprocess.Popen[str]:
         if self.running:
             raise RuntimeError("qemu-user process is already running")
         self._config = config
+        self._stdout_buffer = ""
+        self._stderr_buffer = ""
         self._process = subprocess.Popen(
             config.command(),
             cwd=config.cwd,
             env=config.environment(),
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=None if config.inherit_stderr else subprocess.PIPE,
             text=True,
         )
+        if self._process.stdout is not None:
+            self._set_nonblocking(self._process.stdout.fileno())
+        if self._process.stderr is not None:
+            self._set_nonblocking(self._process.stderr.fileno())
         return self._process
 
     def close(self) -> None:
@@ -108,27 +136,88 @@ class QemuUserProcessRunner:
         self._process = None
         self._config = None
 
+    def write_stdin(self, data: str) -> int:
+        if self._process is None or self._process.stdin is None:
+            raise RuntimeError("stdin is not available")
+        if self._process.poll() is not None:
+            raise RuntimeError("qemu-user process is not running")
+        try:
+            written = self._process.stdin.write(data)
+            self._process.stdin.flush()
+        except BrokenPipeError as exc:
+            raise RuntimeError("stdin is closed (target likely exited)") from exc
+        return int(written or 0)
+
+    def close_stdin(self) -> None:
+        if self._process is None or self._process.stdin is None:
+            return
+        self._process.stdin.close()
+
+    def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
+        self._drain_available_output()
+        return self._read_stream("stdout", cursor, max_chars)
+
+    def read_stderr(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
+        self._drain_available_output()
+        return self._read_stream("stderr", cursor, max_chars)
+
     def exited_summary(self) -> str | None:
         if self._process is None:
             return None
         returncode = self._process.poll()
         if returncode is None:
             return None
-        stderr = ""
-        if self._process.stderr is not None:
-            try:
-                stderr = self._process.stderr.read().strip()
-            except Exception:
-                stderr = ""
-        stdout = ""
-        if self._process.stdout is not None:
-            try:
-                stdout = self._process.stdout.read().strip()
-            except Exception:
-                stdout = ""
+        self._drain_available_output()
+        stderr = self._stderr_buffer.strip()
+        stdout = self._stdout_buffer.strip()
         parts = [f"qemu-user exited with code {returncode}"]
         if stderr:
             parts.append(f"stderr: {stderr}")
         elif stdout:
             parts.append(f"stdout: {stdout}")
         return "; ".join(parts)
+
+    def _drain_available_output(self) -> None:
+        if self._process is None:
+            return
+        if self._process.stdout is not None:
+            self._drain_stream_fd(self._process.stdout.fileno(), "stdout")
+        if self._process.stderr is not None:
+            self._drain_stream_fd(self._process.stderr.fileno(), "stderr")
+
+    def _drain_stream_fd(self, fd: int, stream_name: str) -> None:
+        while True:
+            try:
+                raw = os.read(fd, 4096)
+            except BlockingIOError:
+                return
+            except OSError:
+                return
+            if not raw:
+                return
+            chunk = raw.decode("utf-8", errors="replace")
+            if stream_name == "stdout":
+                self._stdout_buffer += chunk
+            else:
+                self._stderr_buffer += chunk
+
+    def _read_stream(self, stream_name: str, cursor: int, max_chars: int) -> dict[str, Any]:
+        if cursor < 0:
+            raise ValueError("cursor must be >= 0")
+        if max_chars < 1:
+            raise ValueError("max_chars must be >= 1")
+        if stream_name == "stdout":
+            payload = self._stdout_buffer
+        else:
+            payload = self._stderr_buffer
+        if cursor > len(payload):
+            cursor = len(payload)
+        end = min(len(payload), cursor + max_chars)
+        data = payload[cursor:end]
+        eof = self._process is None or self._process.poll() is not None
+        return {"data": data, "cursor": end, "eof": eof}
+
+    @staticmethod
+    def _set_nonblocking(fd: int) -> None:
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
@@ -193,6 +195,8 @@ class FakeProcessRunner:
         self.closed = False
         self.config = None
         self.summary: str | None = None
+        self._process = None
+        self.stdin_writes: list[str] = []
 
     def start(self, config) -> object:
         self.started = True
@@ -204,6 +208,33 @@ class FakeProcessRunner:
 
     def exited_summary(self) -> str | None:
         return self.summary
+
+    @property
+    def process(self):
+        return self._process
+
+    def write_stdin(self, data: str) -> int:
+        self.stdin_writes.append(data)
+        return len(data)
+
+    def close_stdin(self) -> None:
+        return None
+
+    def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict:
+        del max_chars
+        return {"data": "", "cursor": cursor, "eof": False}
+
+    def read_stderr(self, cursor: int = 0, max_chars: int = 4096) -> dict:
+        del max_chars
+        return {"data": "", "cursor": cursor, "eof": False}
+
+
+class ExitedProcess:
+    def __init__(self, returncode: int) -> None:
+        self._returncode = returncode
+
+    def poll(self) -> int:
+        return self._returncode
 
 
 class FailingInstrumentationRpcClient(FakeInstrumentationRpcClient):
@@ -517,6 +548,69 @@ def test_backend_start_can_launch_qemu_user_process() -> None:
     assert runner.config.target == "target.bin"
     assert runner.config.args == ["arg1"]
     assert runner.config.cwd == "/tmp/work"
+    assert backend.get_state()["launched_qemu_user_path"] == "/usr/bin/qemu-x86_64"
+
+
+def test_backend_start_launch_auto_configures_rpc_socket_path() -> None:
+    runner = FakeProcessRunner()
+    instrumentation = FakeInstrumentationClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(instrumentation),
+        process_runner=runner,
+    )
+
+    backend.start(
+        "target.bin",
+        [],
+        None,
+        {
+            "launch": True,
+            "qemu_user_path": "/usr/bin/qemu-x86_64",
+            "instrumentation_socket_path": "/tmp/events.sock",
+        },
+    )
+
+    rpc_socket = runner.config.instrumentation_rpc_socket
+    assert isinstance(rpc_socket, str) and rpc_socket.endswith("/rpc.sock")
+    assert Path(rpc_socket).parent.exists()
+    assert backend.get_state()["instrumentation_rpc_socket_path"] == rpc_socket
+
+    backend.close()
+    assert not Path(rpc_socket).parent.exists()
+
+
+def test_backend_get_state_reports_process_exit_code() -> None:
+    runner = FakeProcessRunner()
+    runner._process = ExitedProcess(139)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=FakeInstrumentationClient(),
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(),
+        process_runner=runner,
+    )
+    backend.start("target.bin", [], None, {"launch": True, "qemu_user_path": "/usr/bin/qemu-x86_64"})
+
+    state = backend.get_state()
+
+    assert state["session_status"] == "exited"
+    assert state["exit_code"] == 139
+    assert state["stop_reason"] == "exited"
+
+
+def test_backend_write_stdin_requires_running_session_state() -> None:
+    runner = FakeProcessRunner()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=FakeInstrumentationClient(),
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(),
+        process_runner=runner,
+    )
+    backend.start("target.bin", [], None, {"launch": True, "qemu_user_path": "/usr/bin/qemu-x86_64"})
+
+    with pytest.raises(InvalidStateError, match="call resume before write_stdin"):
+        backend.write_stdin("1\n")
 
 
 def test_backend_get_registers_uses_rpc_channel() -> None:
