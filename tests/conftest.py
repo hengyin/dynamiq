@@ -24,7 +24,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 @pytest.fixture
 def live_qemu_start_kwargs() -> dict[str, object]:
     required = {
-        "instrumentation_socket_path": os.environ.get("IA_LIVE_EVENT_SOCKET"),
         "instrumentation_rpc_socket_path": os.environ.get("IA_LIVE_RPC_SOCKET"),
         "target": os.environ.get("IA_LIVE_TARGET"),
     }
@@ -47,7 +46,7 @@ def live_qemu_start_kwargs() -> dict[str, object]:
         target=str(target_path),
         args=args,
         cwd=cwd,
-        instrumentation_event_socket=required["instrumentation_socket_path"],
+        instrumentation_event_socket=os.environ.get("IA_LIVE_EVENT_SOCKET"),
         instrumentation_rpc_socket=required["instrumentation_rpc_socket_path"],
         extra_args=qemu_args,
     )
