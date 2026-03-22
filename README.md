@@ -86,3 +86,33 @@ This path expects your locally built QEMU binary at `/home/heng/git/qemu/build-i
 4. `disassemble(...)` from the live runtime `rip`
 5. `run_until_address(...)` against a future instruction address from that disassembly
 6. `read_memory`
+
+## MCP Server (stdio)
+
+This repository provides a minimal MCP server for external coding platforms (for example Claude Code/OpenCode style integrations).
+
+Start it with:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m interactive_analysis.mcp_server
+```
+
+Supported MCP methods:
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+Current tools exposed:
+
+- `session_start`
+- `session_close`
+- `capabilities`
+- `get_state`
+- `get_registers`
+- `disassemble`
+- `read_memory`
+- `list_memory_maps`
+- `run_until_address`
+- `step`
+- `advance_basic_blocks`
