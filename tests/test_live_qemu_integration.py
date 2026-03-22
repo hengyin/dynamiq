@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
@@ -31,5 +33,30 @@ def test_live_qemu_backend_rpc_run_until_address(live_qemu_start_kwargs: dict[st
         assert regs_after["result"]["registers"]["rip"] == target_address
         assert state["pc"] == target_address
         assert state["backend"] == "qemu_user_instrumented"
+    finally:
+        backend.close()
+
+
+@pytest.mark.live_qemu
+def test_live_qemu_backend_list_memory_maps_schema(live_qemu_start_kwargs: dict[str, object]) -> None:
+    backend = QemuUserInstrumentedBackend()
+    backend.start(**live_qemu_start_kwargs)
+    try:
+        result = backend.list_memory_maps()
+        maps = result["result"]["maps"]
+        regions = maps["regions"]
+
+        assert isinstance(regions, list)
+        assert len(regions) > 0
+        first = regions[0]
+        assert {"start", "end", "perm", "name"} <= set(first.keys())
+        assert isinstance(first["start"], str) and first["start"].startswith("0x")
+        assert isinstance(first["end"], str) and first["end"].startswith("0x")
+        assert isinstance(first["perm"], str) and len(first["perm"]) == 3
+        assert first["name"] is None or isinstance(first["name"], str)
+
+        target = str(Path(live_qemu_start_kwargs["target"]).resolve())
+        names = {region.get("name") for region in regions if isinstance(region.get("name"), str)}
+        assert target in names or "[stack]" in names
     finally:
         backend.close()
