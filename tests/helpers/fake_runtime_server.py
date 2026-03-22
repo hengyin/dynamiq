@@ -30,6 +30,8 @@ def rpc_main() -> int:
         params = message.get("params") or {}
         if method == "resume":
             result = {}
+        elif method == "capabilities":
+            result = {"protocol_version": 1}
         elif method == "pause":
             result = {}
         elif method == "query_status":

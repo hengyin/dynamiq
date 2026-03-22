@@ -15,6 +15,7 @@ from .base import BackendCapabilities
 
 class QemuUserInstrumentedBackend:
     """Backend for an instrumented qemu-user target, with optional QMP support."""
+    _RPC_PROTOCOL_VERSION = 1
 
     def __init__(
         self,
@@ -47,6 +48,7 @@ class QemuUserInstrumentedBackend:
         self._state: dict[str, Any] = {
             "session_status": "not_started",
             "backend": "qemu_user_instrumented",
+            "rpc_protocol_version": None,
             "recent_events": [],
             "ingestion_stats": {},
             "capabilities": self._capabilities.to_dict(),
@@ -133,12 +135,16 @@ class QemuUserInstrumentedBackend:
             if process_summary is not None:
                 raise InvalidStateError(f"{exc}; {process_summary}") from exc
             raise
+        if self._instrumentation_rpc is not None:
+            rpc_caps = self._rpc_request("capabilities")
+            self._validate_rpc_capabilities(rpc_caps)
         self._state.update(
             {
                 "session_status": "idle",
                 "target": target,
                 "args": list(args),
                 "cwd": cwd,
+                "rpc_protocol_version": self._RPC_PROTOCOL_VERSION if self._instrumentation_rpc is not None else None,
                 "recent_events": [],
                 "ingestion_stats": self._instrumentation.stats.to_dict() if self._instrumentation is not None else {},
                 "capabilities": self._capabilities.to_dict(),
@@ -437,6 +443,16 @@ class QemuUserInstrumentedBackend:
             if process_summary is not None:
                 raise InvalidStateError(f"{exc}; {process_summary}") from exc
             raise
+
+    def _validate_rpc_capabilities(self, rpc_caps: dict[str, Any]) -> None:
+        version = rpc_caps.get("protocol_version")
+        if not isinstance(version, int):
+            raise InvalidStateError("instrumentation RPC capabilities missing integer protocol_version")
+        if version != self._RPC_PROTOCOL_VERSION:
+            raise InvalidStateError(
+                f"incompatible instrumentation RPC protocol version: got {version}, "
+                f"expected {self._RPC_PROTOCOL_VERSION}"
+            )
 
     @staticmethod
     def _wait_for_socket_path(socket_path: str, timeout: float) -> None:

@@ -123,7 +123,10 @@ class FakeInstrumentationRpcClient:
 
     def request(self, method: str, params: dict | None = None) -> dict:
         params = dict(params or {})
-        self.requests.append((method, params))
+        if method != "capabilities":
+            self.requests.append((method, params))
+        if method == "capabilities":
+            return {"protocol_version": 1}
         if method == "resume":
             return {}
         if method == "pause":
@@ -190,6 +193,13 @@ class FailingInstrumentationRpcClient(FakeInstrumentationRpcClient):
         raise RuntimeError("instrumentation RPC connection closed")
 
 
+class BadProtocolInstrumentationRpcClient(FakeInstrumentationRpcClient):
+    def request(self, method: str, params: dict | None = None) -> dict:
+        if method == "capabilities":
+            return {"protocol_version": 99}
+        return super().request(method, params)
+
+
 class TimeoutInstrumentationClient(FakeInstrumentationClient):
     def wait_for_event(self, event_types: list[str], timeout: float, min_seq_exclusive: int | None = None) -> dict:
         del min_seq_exclusive
@@ -243,6 +253,18 @@ def test_backend_start_allows_rpc_only_mode() -> None:
     assert state["capabilities"]["trace_branch"] is False
     assert state["capabilities"]["pause_resume"] is False
     assert registers["result"]["registers"]["rip"] == "0x401000"
+
+
+def test_backend_start_rejects_incompatible_rpc_protocol_version() -> None:
+    rpc = BadProtocolInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+
+    with pytest.raises(InvalidStateError, match="incompatible instrumentation RPC protocol version"):
+        backend.start("target.bin", [], None, {})
 
 
 def test_backend_advance_basic_blocks_uses_rpc_method() -> None:
@@ -320,10 +342,8 @@ def test_backend_rpc_failure_includes_process_exit_summary() -> None:
         instrumentation_rpc_client=rpc,
         process_runner=process_runner,
     )
-    backend.start("target.bin", [], None, {"capabilities_override": {"run_until_address": True}})
-
     with pytest.raises(InvalidStateError, match="qemu-user exited with code 139"):
-        backend.run_until_address("0x401000", timeout=1.0)
+        backend.start("target.bin", [], None, {"capabilities_override": {"run_until_address": True}})
 
 
 def test_backend_get_recent_events_returns_event_shape_not_trace_shape() -> None:

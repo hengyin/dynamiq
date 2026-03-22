@@ -58,7 +58,6 @@ def test_backend_process_integration_round_trip() -> None:
     )
 
     backend.start("target.bin", [], None, {})
-    ready = backend.run_until_event(["backend_ready"], timeout=1.0)
     stop = backend.run_until_event(["branch"], timeout=1.0)
     regs = backend.get_registers(["rax"])
     mem = backend.read_memory("0x401000", 2)
@@ -68,7 +67,7 @@ def test_backend_process_integration_round_trip() -> None:
     state = backend.get_state()
     backend.close()
 
-    assert ready["result"]["matched_event"]["type"] == "backend_ready"
+    assert any(item["type"] == "backend_ready" for item in events_result["result"]["events"])
     assert stop["result"]["matched_event"]["event_id"] == "e-2"
     assert regs["result"]["registers"]["rip"] == "0x401000"
     assert mem["result"] == {"address": "0x401000", "size": 2, "bytes": "0102"}
@@ -91,6 +90,7 @@ def test_backend_process_integration_does_not_rematch_old_branch() -> None:
     )
 
     backend.start("target.bin", [], None, {})
-    backend.run_until_event(["backend_ready"], timeout=1.0)
+    ready_events = backend.get_recent_events(limit=5)["result"]["events"]
+    assert any(event["type"] == "backend_ready" for event in ready_events)
     backend.run_until_event(["branch"], timeout=1.0)
     backend.close()
