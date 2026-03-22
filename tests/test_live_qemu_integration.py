@@ -27,6 +27,9 @@ def test_live_qemu_backend_rpc_run_until_address(live_qemu_start_kwargs: dict[st
         assert caps["read_registers"] is True
         assert caps["disassemble"] is True
         assert caps["run_until_address"] is True
+        assert state["rpc_protocol_version"] == 1
+        assert state["rpc_capabilities"]["read_registers"] is True
+        assert state["rpc_capabilities"]["run_until_address"] is True
         assert stop["result"]["matched"] is True
         assert stop["result"]["matched_pc"] == target_address
         assert stop["result"]["pc"] == target_address

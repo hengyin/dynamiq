@@ -4,7 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from interactive_analysis.errors import SessionTimeoutError
 from interactive_analysis.instrumentation import InstrumentationClient, InstrumentationRpcClient
 from interactive_analysis.qmp import QmpClient
 
@@ -90,7 +93,7 @@ def test_backend_process_integration_does_not_rematch_old_branch() -> None:
     )
 
     backend.start("target.bin", [], None, {})
-    ready_events = backend.get_recent_events(limit=5)["result"]["events"]
-    assert any(event["type"] == "backend_ready" for event in ready_events)
     backend.run_until_event(["branch"], timeout=1.0)
+    with pytest.raises(SessionTimeoutError):
+        backend.run_until_event(["branch"], timeout=0.1)
     backend.close()
