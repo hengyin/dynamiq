@@ -8,6 +8,7 @@ from typing import Any
 class ExecutionState:
     session_status: str = "not_started"
     backend: str | None = None
+    rpc_protocol_version: int | None = None
     target: str | None = None
     args: list[str] = field(default_factory=list)
     cwd: str | None = None
@@ -29,6 +30,7 @@ class ExecutionState:
         return {
             "session_status": self.session_status,
             "backend": self.backend,
+            "rpc_protocol_version": self.rpc_protocol_version,
             "target": self.target,
             "args": list(self.args),
             "cwd": self.cwd,

@@ -44,6 +44,7 @@ class AnalysisSession:
         self.state.args = call_args
         self.state.cwd = cwd
         self.state.capabilities = self.backend.capabilities()
+        self._merge_state(self.backend.get_state())
         return self._response("start", {"target": target})
 
     def resume(self, timeout: float = 5.0) -> dict[str, Any]:
@@ -143,6 +144,7 @@ class AnalysisSession:
         return self._response("get_state", self.state.to_dict())
 
     def capabilities(self) -> dict[str, Any]:
+        self._merge_state(self.backend.get_state())
         return self._response("capabilities", {"capabilities": self.backend.capabilities()})
 
     def close(self) -> dict[str, Any]:
