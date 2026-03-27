@@ -106,7 +106,12 @@ class AnalysisSession:
         ordered = sorted(set(self.breakpoints))
         current_pc: int | None = self._parse_optional_address(self.state.pc)
         if current_pc is None:
-            registers = self.get_registers(["rip", "eip", "pc"])["result"].get("registers", {})
+            try:
+                registers = self.get_registers(["rip", "eip", "pc"])["result"].get("registers", {})
+            except Exception:
+                # Some runtimes (for example i386 guests) do not support register
+                # reads yet; keep breakpoint execution usable without PC hints.
+                registers = {}
             for key in ("rip", "eip", "pc"):
                 value = registers.get(key)
                 parsed = self._parse_optional_address(value)
@@ -136,7 +141,7 @@ class AnalysisSession:
             },
         )
 
-    def write_stdin(self, data: str) -> dict[str, Any]:
+    def write_stdin(self, data: str | bytes) -> dict[str, Any]:
         return self._forward("write_stdin", self.backend.write_stdin(data))
 
     def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:

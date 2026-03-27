@@ -29,6 +29,24 @@ python -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
+### Build Instrumented QEMU Binaries
+
+Build both supported dynamiq runtimes into `tools/qemu/`:
+
+```bash
+./scripts/build_qemu_toolchain.sh
+```
+
+Common overrides:
+
+```bash
+./scripts/build_qemu_toolchain.sh \
+  --qemu-src /home/heng/git/qemu \
+  --build-dir /tmp/qemu-build-ia \
+  --out-dir /home/heng/git/dynamiq/tools/qemu \
+  --clean
+```
+
 ## Tests
 
 Run the default test suite:

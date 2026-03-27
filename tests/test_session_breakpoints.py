@@ -121,6 +121,12 @@ class FakeBackend:
         return None
 
 
+class FakeBackendNoRegisterReads(FakeBackend):
+    def get_registers(self, names=None):  # noqa: ANN001
+        del names
+        raise RuntimeError("unsupported_arch: get_registers is only implemented for x86_64")
+
+
 def test_session_bp_run_multiple_breakpoints_selects_nearest_forward() -> None:
     session = AnalysisSession(backend=FakeBackend())
     session.state.session_status = "paused"
@@ -161,6 +167,20 @@ def test_session_bp_run_single_breakpoint_uses_run_until_address() -> None:
     assert result["result"]["matched_address"] == "0x1008"
     assert backend.run_until_calls == 1
     assert backend.step_calls == 0
+
+
+def test_session_bp_run_works_without_register_reads() -> None:
+    backend = FakeBackendNoRegisterReads()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+    session.bp_add("0x2000")
+    session.bp_add("0x3000")
+
+    result = session.bp_run(timeout=1.0, max_steps=10)
+
+    assert result["result"]["selected_address"] == "0x2000"
+    assert result["result"]["matched_address"] == "0x2000"
+    assert backend.run_until_calls == 1
 
 
 def test_session_pause_noop_when_idle_or_paused() -> None:

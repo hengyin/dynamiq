@@ -11,17 +11,59 @@ from pathlib import Path
 from typing import Any
 
 
-def resolve_qemu_user_path(qemu_config: dict[str, Any]) -> str:
+_ELF_MACHINE_TO_QEMU_USER = {
+    3: "qemu-i386",
+    62: "qemu-x86_64",
+}
+
+
+def _detect_elf_machine(target: str) -> int | None:
+    try:
+        with Path(target).open("rb") as stream:
+            header = stream.read(20)
+    except OSError:
+        return None
+    if len(header) < 20:
+        return None
+    if header[:4] != b"\x7fELF":
+        return None
+    data_encoding = header[5]
+    if data_encoding == 1:
+        byteorder = "little"
+    elif data_encoding == 2:
+        byteorder = "big"
+    else:
+        return None
+    return int.from_bytes(header[18:20], byteorder=byteorder, signed=False)
+
+
+def _resolve_qemu_from_candidates(binary_names: list[str], repo_root: Path, home: Path) -> str:
+    for binary_name in binary_names:
+        candidates = [
+            repo_root / "tools" / "qemu" / f"{binary_name}-instrumented",
+            repo_root / "tools" / "qemu" / binary_name,
+            home / "git" / "qemu" / "build-ia" / binary_name,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        discovered = shutil.which(binary_name)
+        if discovered is not None:
+            return discovered
+    return "qemu-x86_64"
+
+
+def resolve_qemu_user_path(qemu_config: dict[str, Any], target: str) -> str:
     configured = qemu_config.get("qemu_user_path")
     if configured:
         return str(configured)
-    preferred = Path.home() / "git" / "qemu" / "build-ia" / "qemu-x86_64"
-    if preferred.exists():
-        return str(preferred)
-    discovered = shutil.which("qemu-x86_64")
-    if discovered is not None:
-        return discovered
-    return "qemu-x86_64"
+    home = Path.home()
+    repo_root = Path(__file__).resolve().parents[2]
+    machine = _detect_elf_machine(target)
+    preferred_binary = _ELF_MACHINE_TO_QEMU_USER.get(machine)
+    binary_names = [preferred_binary] if preferred_binary is not None else []
+    binary_names.append("qemu-x86_64")
+    return _resolve_qemu_from_candidates(binary_names, repo_root=repo_root, home=home)
 
 
 @dataclass(slots=True)
@@ -46,7 +88,7 @@ class QemuUserLaunchConfig:
     ) -> "QemuUserLaunchConfig":
         qemu_config = dict(qemu_config or {})
         return cls(
-            qemu_user_path=resolve_qemu_user_path(qemu_config),
+            qemu_user_path=resolve_qemu_user_path(qemu_config, target=target),
             target=target,
             args=list(args or []),
             cwd=cwd,
@@ -152,13 +194,17 @@ class QemuUserProcessRunner:
         self._process = None
         self._config = None
 
-    def write_stdin(self, data: str) -> int:
+    def write_stdin(self, data: str | bytes) -> int:
         if self._process is None or self._process.stdin is None:
             raise RuntimeError("stdin is not available")
         if self._process.poll() is not None:
             raise RuntimeError("qemu-user process is not running")
+        if isinstance(data, bytes):
+            payload = data
+        else:
+            payload = data.encode("utf-8", errors="replace")
         try:
-            written = self._process.stdin.write(data.encode("utf-8", errors="replace"))
+            written = self._process.stdin.write(payload)
             self._process.stdin.flush()
         except BrokenPipeError as exc:
             raise RuntimeError("stdin is closed (target likely exited)") from exc

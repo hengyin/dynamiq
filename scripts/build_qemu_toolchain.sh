@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+QEMU_SRC="${HOME}/git/qemu"
+BUILD_DIR="/tmp/qemu-build-ia"
+OUT_DIR="${REPO_ROOT}/tools/qemu"
+TARGET_LIST="i386-linux-user,x86_64-linux-user"
+JOBS="$(command -v nproc >/dev/null 2>&1 && nproc || echo 4)"
+CLEAN=0
+DRY_RUN=0
+
+usage() {
+  cat <<'EOF'
+Build instrumented qemu-user binaries for dynamiq.
+
+Usage:
+  scripts/build_qemu_toolchain.sh [options]
+
+Options:
+  --qemu-src <path>      QEMU source tree (default: ~/git/qemu)
+  --build-dir <path>     Build directory (default: /tmp/qemu-build-ia)
+  --out-dir <path>       Output directory (default: ./tools/qemu)
+  --target-list <list>   QEMU target list (default: i386-linux-user,x86_64-linux-user)
+  --jobs <n>             Parallel build jobs (default: nproc or 4)
+  --clean                Remove build directory before configure/build
+  --dry-run              Print actions without executing
+  -h, --help             Show this help
+
+Outputs:
+  <out-dir>/qemu-i386-instrumented
+  <out-dir>/qemu-x86_64-instrumented
+EOF
+}
+
+run() {
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    printf '[dry-run] %q' "$1"
+    shift
+    for arg in "$@"; do
+      printf ' %q' "${arg}"
+    done
+    printf '\n'
+    return 0
+  fi
+  "$@"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --qemu-src)
+      QEMU_SRC="$2"
+      shift 2
+      ;;
+    --build-dir)
+      BUILD_DIR="$2"
+      shift 2
+      ;;
+    --out-dir)
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    --target-list)
+      TARGET_LIST="$2"
+      shift 2
+      ;;
+    --jobs)
+      JOBS="$2"
+      shift 2
+      ;;
+    --clean)
+      CLEAN=1
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ ! -d "${QEMU_SRC}" ]]; then
+  echo "QEMU source directory not found: ${QEMU_SRC}" >&2
+  exit 1
+fi
+if [[ ! -x "${QEMU_SRC}/configure" ]]; then
+  echo "QEMU configure script missing or not executable: ${QEMU_SRC}/configure" >&2
+  exit 1
+fi
+
+if [[ "${CLEAN}" -eq 1 ]]; then
+  run rm -rf "${BUILD_DIR}"
+fi
+
+run mkdir -p "${BUILD_DIR}"
+run mkdir -p "${OUT_DIR}"
+
+if [[ ! -f "${BUILD_DIR}/build.ninja" ]]; then
+  run bash -lc "cd \"${BUILD_DIR}\" && \"${QEMU_SRC}/configure\" --target-list=\"${TARGET_LIST}\" --disable-werror"
+fi
+
+run make -C "${BUILD_DIR}" -j"${JOBS}" qemu-i386 qemu-x86_64
+run cp -f "${BUILD_DIR}/qemu-i386" "${OUT_DIR}/qemu-i386-instrumented"
+run cp -f "${BUILD_DIR}/qemu-x86_64" "${OUT_DIR}/qemu-x86_64-instrumented"
+run chmod 755 "${OUT_DIR}/qemu-i386-instrumented" "${OUT_DIR}/qemu-x86_64-instrumented"
+
+echo "Built binaries:"
+echo "  ${OUT_DIR}/qemu-i386-instrumented"
+echo "  ${OUT_DIR}/qemu-x86_64-instrumented"
