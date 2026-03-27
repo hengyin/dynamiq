@@ -56,6 +56,13 @@ class FakeSession:
     def get_registers(self, names=None):  # noqa: ANN001
         return {"ok": True, "command": "get_registers", "result": {"registers": {"rip": "0x401000"}}}
 
+    def backtrace(self, max_frames=16):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "backtrace",
+            "result": {"frames": [{"index": 0, "pc": "0x401000", "symbol": "main", "offset": 0}], "max_frames": max_frames},
+        }
+
     def disassemble(self, address, count=16):  # noqa: ANN001
         return {"ok": True, "command": "disassemble", "result": {"instructions": [{"address": address, "size": count}]}}
 
@@ -136,6 +143,7 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "send_line" in names
     assert "stdout" in names
     assert "bp_add" in names
+    assert "bt" in names
     assert "bp_list" in names
     assert "stdin" not in names
     assert "stdin_file" not in names
@@ -258,6 +266,27 @@ def test_mcp_tool_call_start_auto_restarts_existing_session() -> None:
     assert second is not None
     assert second["result"]["isError"] is False
     assert fake.close_calls == 1
+
+
+def test_mcp_tool_call_bt() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "bt",
+                "arguments": {"max_frames": 8},
+            },
+        }
+    )
+    assert response is not None
+    result = response["result"]
+    assert result["isError"] is False
+    payload = result["structuredContent"]
+    assert payload["command"] == "backtrace"
+    assert payload["result"]["frames"][0]["symbol"] == "main"
 
 
 def test_mcp_server_shutdown_closes_active_session() -> None:

@@ -116,7 +116,7 @@ class InteractiveAnalysisMcpServer:
                 if not isinstance(target_value, str) or target_value.strip() == "":
                     return self._tool_error(
                         "start requires non-empty string argument `target` "
-                        '(example: {"target":"/home/heng/work2/KPRCA_00021"})'
+                        '(example: {"target":"/path/to/target_binary"})'
                     )
                 target = target_value.strip()
                 # Reject malformed placeholder-like targets early to avoid
@@ -187,6 +187,9 @@ class InteractiveAnalysisMcpServer:
             if name == "regs":
                 names = self._parse_optional_string_list(arguments, "names", default=None)
                 return self._tool_ok(self._ensure_session().get_registers(names))
+            if name == "bt":
+                max_frames = self._parse_int(arguments, "max_frames", default=16, minimum=1)
+                return self._tool_ok(self._ensure_session().backtrace(max_frames=max_frames))
             if name == "disasm":
                 address = self._parse_nonempty_string(arguments, "address")
                 count = self._parse_int(arguments, "count", default=16, minimum=1)
@@ -509,7 +512,18 @@ class InteractiveAnalysisMcpServer:
         payload = {
             "ok": False,
             "command": command,
-            "result": {"timed_out": True, "timeout": timeout, "message": message},
+            "result": {
+                # Keep legacy fields for compatibility with existing clients.
+                "timed_out": True,
+                "timeout": timeout,
+                # Preferred machine-readable status for LLM/tooling flows.
+                "status": "incomplete",
+                "reason": "window_elapsed",
+                "window_elapsed": True,
+                "guidance_code": "FOLLOW_IO_POLL_LOOP",
+                "next_action": ["stdout", "stderr", "state"],
+                "message": message,
+            },
         }
         return {
             "content": [{"type": "text", "text": json.dumps(payload, sort_keys=True)}],
@@ -628,7 +642,10 @@ class InteractiveAnalysisMcpServer:
                     "Run target execution. If breakpoints are configured, run until next breakpoint; "
                     "otherwise plain resume. "
                     "For interactive targets: run -> read stdout/stderr -> send input -> run. "
-                    "A timeout is returned as non-fatal timed_out=true (not an MCP error)."
+                    "If the run window elapses, the result is non-fatal and includes "
+                    "reason=window_elapsed plus next_action=[stdout, stderr, state]. "
+                    "When window_elapsed is returned, MUST call stdout, stderr, and state "
+                    "before any recovery decision."
                 ),
                 input_schema={
                     "type": "object",
@@ -636,7 +653,9 @@ class InteractiveAnalysisMcpServer:
                         "timeout": {
                             "type": "number",
                             "exclusiveMinimum": 0,
-                            "description": "RPC timeout in seconds.",
+                            "description": (
+                                "Run window in seconds (field name `timeout` kept for compatibility)."
+                            ),
                             "default": 5.0,
                         }
                     },
@@ -645,14 +664,19 @@ class InteractiveAnalysisMcpServer:
             ),
             ToolSpec(
                 name="pause",
-                description="Pause target execution.",
+                description=(
+                    "Pause target execution. "
+                    "If pause window elapses, MUST call stdout, stderr, and state before recovery."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
                         "timeout": {
                             "type": "number",
                             "exclusiveMinimum": 0,
-                            "description": "RPC timeout in seconds.",
+                            "description": (
+                                "Pause window in seconds (field name `timeout` kept for compatibility)."
+                            ),
                             "default": 5.0,
                         }
                     },
@@ -669,6 +693,25 @@ class InteractiveAnalysisMcpServer:
                             "type": "array",
                             "description": "Optional register names to read. If omitted, backend defaults are used.",
                             "items": {"type": "string"},
+                        }
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="bt",
+                description=(
+                    "Best-effort stack backtrace (gdb-like). "
+                    "Uses current PC + frame-pointer unwinding and resolves nearest symbols."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "max_frames": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 16,
+                            "description": "Maximum stack frames to return.",
                         }
                     },
                     "additionalProperties": False,
@@ -716,7 +759,10 @@ class InteractiveAnalysisMcpServer:
             ),
             ToolSpec(
                 name="step",
-                description="Single-step a number of instructions.",
+                description=(
+                    "Single-step a number of instructions. "
+                    "If step window elapses, MUST call stdout, stderr, and state before recovery."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -729,7 +775,9 @@ class InteractiveAnalysisMcpServer:
                         "timeout": {
                             "type": "number",
                             "exclusiveMinimum": 0,
-                            "description": "Maximum wait in seconds.",
+                            "description": (
+                                "Step window in seconds (field name `timeout` kept for compatibility)."
+                            ),
                             "default": 5.0,
                         },
                     },
@@ -738,7 +786,10 @@ class InteractiveAnalysisMcpServer:
             ),
             ToolSpec(
                 name="bb",
-                description="Advance by a number of basic blocks.",
+                description=(
+                    "Advance by a number of basic blocks. "
+                    "If execution window elapses, MUST call stdout, stderr, and state before recovery."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -751,7 +802,9 @@ class InteractiveAnalysisMcpServer:
                         "timeout": {
                             "type": "number",
                             "exclusiveMinimum": 0,
-                            "description": "Maximum wait in seconds.",
+                            "description": (
+                                "Execution window in seconds (field name `timeout` kept for compatibility)."
+                            ),
                             "default": 5.0,
                         },
                     },

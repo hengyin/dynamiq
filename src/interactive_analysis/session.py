@@ -179,6 +179,77 @@ class AnalysisSession:
     def get_registers(self, names: list[str] | None = None) -> dict[str, Any]:
         return self._forward("get_registers", self.backend.get_registers(names))
 
+    def backtrace(self, max_frames: int = 16) -> dict[str, Any]:
+        if max_frames < 1:
+            raise InvalidStateError("max_frames must be >= 1")
+        regs64 = self.get_registers(["pc", "rip", "rbp", "rsp"]).get("result", {}).get("registers", {})
+        regs32 = self.get_registers(["pc", "eip", "ebp", "esp"]).get("result", {}).get("registers", {})
+        if not isinstance(regs64, dict) or not isinstance(regs32, dict):
+            raise InvalidStateError("register read did not return a register map")
+
+        pc64 = self._parse_optional_address(regs64.get("pc") or regs64.get("rip"))
+        fp64 = self._parse_optional_address(regs64.get("rbp"))
+        sp64 = self._parse_optional_address(regs64.get("rsp"))
+        pc32 = self._parse_optional_address(regs32.get("pc") or regs32.get("eip"))
+        fp32 = self._parse_optional_address(regs32.get("ebp"))
+        sp32 = self._parse_optional_address(regs32.get("esp"))
+
+        qemu_path = (self.state.launched_qemu_user_path or "").lower()
+        if "qemu-i386" in qemu_path:
+            prefer_64 = False
+        elif "qemu-x86_64" in qemu_path:
+            prefer_64 = True
+        else:
+            prefer_64 = pc64 is not None and pc64 > 0xFFFFFFFF
+
+        if prefer_64:
+            pc = pc64 if pc64 is not None else pc32
+            fp = fp64 if fp64 is not None else fp32
+            sp = sp64 if sp64 is not None else sp32
+            pointer_size = 8
+        else:
+            pc = pc32 if pc32 is not None else pc64
+            fp = fp32 if fp32 is not None else fp64
+            sp = sp32 if sp32 is not None else sp64
+            pointer_size = 4
+
+        if pc is None:
+            pc = self._parse_optional_address(self.state.pc)
+        if pc is None:
+            raise InvalidStateError("unable to determine instruction pointer for backtrace")
+
+        symbol_table = self._build_symbol_lookup()
+        frames: list[dict[str, Any]] = []
+        frames.append(self._format_bt_frame(index=0, pc=pc, sp=sp, fp=fp, symbol_table=symbol_table))
+
+        reason: str | None = None
+        current_fp = fp
+        for index in range(1, max_frames):
+            if current_fp is None or current_fp == 0:
+                reason = "frame_pointer_unavailable"
+                break
+            next_fp = self._read_pointer(current_fp, pointer_size)
+            ret_addr = self._read_pointer(current_fp + pointer_size, pointer_size)
+            if ret_addr is None or ret_addr == 0:
+                reason = "return_address_unavailable"
+                break
+            frame = self._format_bt_frame(index=index, pc=ret_addr, sp=None, fp=next_fp, symbol_table=symbol_table)
+            frames.append(frame)
+            if next_fp is None or next_fp <= current_fp:
+                reason = "frame_chain_terminated"
+                break
+            current_fp = next_fp
+
+        return self._response(
+            "backtrace",
+            {
+                "frames": frames,
+                "pointer_size": pointer_size,
+                "reason": reason,
+                "truncated": len(frames) >= max_frames,
+            },
+        )
+
     def read_memory(self, address: str, size: int) -> dict[str, Any]:
         if size > self.config.max_memory_read:
             raise InvalidStateError(f"memory read exceeds max of {self.config.max_memory_read} bytes")
@@ -453,3 +524,82 @@ class AnalysisSession:
         if basename_any_offset:
             return basename_any_offset
         return legacy_contains
+
+    def _read_pointer(self, address: int, pointer_size: int) -> int | None:
+        try:
+            payload = self.read_memory(hex(address), pointer_size)
+        except Exception:
+            return None
+        result = payload.get("result", {})
+        if not isinstance(result, dict):
+            return None
+        value_hex = result.get("bytes")
+        if not isinstance(value_hex, str):
+            return None
+        try:
+            raw = bytes.fromhex(value_hex)
+        except ValueError:
+            return None
+        if len(raw) < pointer_size:
+            return None
+        return int.from_bytes(raw[:pointer_size], byteorder="little", signed=False)
+
+    def _build_symbol_lookup(self) -> list[tuple[int, str]]:
+        try:
+            payload = self.symbols(max_count=4096)
+        except Exception:
+            return []
+        raw_symbols = payload.get("result", {}).get("symbols", [])
+        if not isinstance(raw_symbols, list):
+            return []
+        pairs: list[tuple[int, str]] = []
+        for item in raw_symbols:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            loaded = item.get("loaded_address")
+            if not isinstance(name, str) or not isinstance(loaded, str):
+                continue
+            addr = self._parse_optional_address(loaded)
+            if addr is None:
+                continue
+            pairs.append((addr, name))
+        pairs.sort(key=lambda entry: entry[0])
+        return pairs
+
+    def _format_bt_frame(
+        self,
+        *,
+        index: int,
+        pc: int,
+        sp: int | None,
+        fp: int | None,
+        symbol_table: list[tuple[int, str]],
+    ) -> dict[str, Any]:
+        symbol_name, offset = self._lookup_symbol(pc, symbol_table)
+        frame: dict[str, Any] = {
+            "index": index,
+            "pc": hex(pc),
+            "symbol": symbol_name,
+            "offset": offset,
+        }
+        if sp is not None:
+            frame["sp"] = hex(sp)
+        if fp is not None:
+            frame["fp"] = hex(fp)
+        return frame
+
+    @staticmethod
+    def _lookup_symbol(pc: int, symbol_table: list[tuple[int, str]]) -> tuple[str | None, int | None]:
+        if not symbol_table:
+            return (None, None)
+        candidate_addr: int | None = None
+        candidate_name: str | None = None
+        for addr, name in symbol_table:
+            if addr > pc:
+                break
+            candidate_addr = addr
+            candidate_name = name
+        if candidate_addr is None or candidate_name is None:
+            return (None, None)
+        return (candidate_name, pc - candidate_addr)

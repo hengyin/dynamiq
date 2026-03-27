@@ -12,7 +12,7 @@ Use this skill when a task requires driving the `dynamiq` MCP tools for interact
 0. Keep analysis program-agnostic.
 - Do not assume target-specific commands, prompts, symbol names, offsets, or exploit paths.
 - Infer interaction flow from observed `stdout`/`stderr`, then adapt inputs accordingly.
-- Use `syms`/`maps`/`regs` from the current session as the source of truth.
+- Use `syms`/`maps`/`regs`/`bt` from the current session as the source of truth.
 
 1. Never guess runtime addresses.
 - Always call `syms` in the current session and use `symbols[].loaded_address` for `bp_add`.
@@ -47,7 +47,7 @@ Use this skill when a task requires driving the `dynamiq` MCP tools for interact
 6. `stdout` + `stderr`.
 7. `send_line` / `send_bytes` / `send_file` as needed.
 8. Repeat `run` -> `stdout` -> `stderr` -> `state`.
-9. Use `regs`, `disasm`, `mem`, `maps`, `step`, `bb` for inspection.
+9. Use `regs`, `bt`, `disasm`, `mem`, `maps`, `step`, `bb` for inspection.
 10. `close` at end.
 
 ## Tool Choice Guide
@@ -61,7 +61,8 @@ Use this skill when a task requires driving the `dynamiq` MCP tools for interact
 - `send_line`: appends newline automatically.
 - `send_bytes`: use `data` (text) or `data_hex` (raw bytes), not both.
 - `send_file`: stream bytes from local file to stdin.
-- `regs` / `disasm` / `mem` / `maps`: low-level state inspection.
+- `regs` / `bt` / `disasm` / `mem` / `maps`: low-level state inspection.
+- `bt`: best-effort stack backtrace; use after breakpoints to quickly map call chains.
 - `state`: verify lifecycle (`idle`, `paused`, `running`, `exited`).
 - `close`: terminate active session and reset stream cursors.
 
@@ -112,5 +113,6 @@ Use a two-loop strategy: breadth first, then depth on hotspots.
 
 - Prefer absolute target paths in `start`.
 - For stack memory reads, call `regs` first and use live `rsp` from that result.
+- For call-chain context, call `bt` after a breakpoint hit before deeper `disasm`/`mem`.
 - Do not reuse addresses from previous sessions.
 - If tool output indicates malformed arguments, fix input shape before retrying.

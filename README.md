@@ -140,7 +140,7 @@ PYTHONPATH=src .venv/bin/python -m interactive_analysis.mcp_server
 - `start`, `close`, `caps`, `state`
 - `run`, `pause`
 - `send_bytes`, `send_line`, `send_file`, `stdout`, `stderr`
-- `regs`, `disasm`, `mem`, `maps`, `syms`
+- `regs`, `bt`, `disasm`, `mem`, `maps`, `syms`
 - `step`, `bb`
 - `bp_add`, `bp_del`, `bp_list`, `bp_clear`
 
@@ -207,7 +207,16 @@ Example `tools/call` arguments:
 }
 ```
 
+- `bt` (best-effort stack backtrace)
+```json
+{
+  "max_frames": 16
+}
+```
+
 `stdout` and `stderr` return `data`, `cursor`, and `eof`. The server tracks cursors internally, so repeated calls return only new output by default.
+
+`bt` returns a gdb-like backtrace using current registers plus frame-pointer unwinding. It is best-effort and may be shallow if frame pointers are omitted or stack metadata is unavailable.
 
 ### MCP troubleshooting
 
