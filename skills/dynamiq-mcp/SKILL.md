@@ -7,6 +7,28 @@ description: Use when operating the Interactive Dynamic Analysis MCP server (`dy
 
 Use this skill when a task requires driving the `dynamiq` MCP tools for interactive dynamic analysis.
 
+## When to Use MCP vs Scripting API
+
+Dynamiq provides **two complementary interfaces** for analyzing target programs:
+
+| Aspect | MCP Interface | Scripting API |
+|--------|---|---|
+| **Best For** | One-shot analysis from LLM; interactive debugging | Autonomous systems; testing; CI/CD pipelines |
+| **Interaction** | JSON-RPC stateless requests; human-friendly | Python library; persistent session |
+| **Session Management** | LLM manages session state across calls | Python code maintains session automatically |
+| **Data Flow** | Request → Response cycle; clean separation | Direct method calls; full state access |
+| **Integration** | Immediate availability; no setup | Local Python environment required |
+| **Real-time Feedback** | Good for interactive exploration | Better for programmatic workflows |
+
+**Choose MCP if:** You're analyzing a program interactively, need to explore dynamically, or want clean separation between tool calls.
+
+**Choose Scripting if:** You're building autonomous tests, security scanners, CI/CD workflows, or need persistent session state without round-trip overhead.
+
+### Example Scenarios
+
+- **MCP**: "Help me analyze this binary by setting breakpoints at malloc and checking memory allocation patterns"
+- **Scripting**: Automated test suite validating that functions execute correctly; autonomous security scanner continuously checking syscalls
+
 ## Required Operating Rules
 
 0. Keep analysis program-agnostic.
