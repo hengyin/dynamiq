@@ -168,6 +168,14 @@ class QemuUserInstrumentedBackend:
                 "target": target,
                 "args": list(args),
                 "cwd": cwd,
+                "stop_reason": None,
+                "exit_code": None,
+                "exit_signal": None,
+                "pc": None,
+                "current_thread_id": None,
+                "registers": {},
+                "memory_maps": [],
+                "last_event_id": None,
                 "launched_qemu_user_path": launched_qemu_user_path,
                 "instrumentation_rpc_socket_path": qemu_config.get("instrumentation_rpc_socket_path"),
                 "rpc_protocol_version": self._RPC_PROTOCOL_VERSION if self._instrumentation_rpc is not None else None,
@@ -495,6 +503,14 @@ class QemuUserInstrumentedBackend:
         self._state["last_rpc_error"] = None
         self._state["rpc_history"] = []
         self._state["last_stop_transition"] = {}
+        self._state["stop_reason"] = None
+        self._state["exit_code"] = None
+        self._state["exit_signal"] = None
+        self._state["pc"] = None
+        self._state["current_thread_id"] = None
+        self._state["registers"] = {}
+        self._state["memory_maps"] = []
+        self._state["last_event_id"] = None
         self._state["capabilities"] = self._capabilities.to_dict()
 
     def _response(self, result: dict[str, Any]) -> dict[str, Any]:

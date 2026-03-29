@@ -120,10 +120,30 @@ class AnalysisSession:
             # Fallback for runtimes/channels where live register reads are not available.
             current_pc = self._parse_optional_address(self.state.pc)
         if current_pc is not None and current_pc in ordered:
-            return self._response("bp_run", {"matched_address": hex(current_pc), "selected_address": hex(current_pc), "breakpoints": [hex(item) for item in ordered], "steps": 0})
+            # Continue semantics: if currently stopped on a breakpoint,
+            # advance once so "run" does not re-hit the same address with steps=0.
+            stepped_pc: int | None = None
+            try:
+                step_result = self.step(1, timeout=timeout)
+                stepped_pc = self._parse_optional_address(step_result.get("result", {}).get("pc"))
+            except Exception:
+                stepped_pc = None
+            if stepped_pc is None:
+                try:
+                    registers = self.get_registers(["rip", "eip", "pc"])["result"].get("registers", {})
+                except Exception:
+                    registers = {}
+                for key in ("rip", "eip", "pc"):
+                    value = registers.get(key)
+                    parsed = self._parse_optional_address(value)
+                    if parsed is not None:
+                        stepped_pc = parsed
+                        break
+            if stepped_pc is not None:
+                current_pc = stepped_pc
 
         if current_pc is not None:
-            forward = [bp for bp in ordered if bp >= current_pc]
+            forward = [bp for bp in ordered if bp > current_pc]
             selected = forward[0] if forward else ordered[0]
         else:
             selected = ordered[0]

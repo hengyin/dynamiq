@@ -308,6 +308,33 @@ def test_backend_start_allows_rpc_only_mode() -> None:
     assert registers["result"]["registers"]["rip"] == "0x401000"
 
 
+def test_backend_start_clears_stale_exit_and_pc_state() -> None:
+    rpc = FakeInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+    backend._state["session_status"] = "exited"
+    backend._state["exit_code"] = 0
+    backend._state["exit_signal"] = "SIG11"
+    backend._state["stop_reason"] = "signaled"
+    backend._state["pc"] = "0x4081b9e0"
+    backend._state["registers"] = {"eip": "0x4081b9e0"}
+    backend._state["memory_maps"] = [{"start": "0x1", "end": "0x2", "perm": "r--", "name": None}]
+
+    backend.start("target.bin", [], None, {})
+
+    state = backend.get_state()
+    assert state["session_status"] == "paused"
+    assert state["exit_code"] is None
+    assert state["exit_signal"] is None
+    assert state["stop_reason"] is None
+    assert state["pc"] is None
+    assert state["registers"] == {}
+    assert state["memory_maps"] == []
+
+
 def test_backend_start_rejects_incompatible_rpc_protocol_version() -> None:
     rpc = BadProtocolInstrumentationRpcClient()
     backend = QemuUserInstrumentedBackend(
