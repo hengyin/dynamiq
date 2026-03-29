@@ -4,9 +4,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
-from interactive_analysis.instrumentation import InstrumentationClient, InstrumentationRpcClient
-from interactive_analysis.qmp import QmpClient
+from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from dynamiq.instrumentation import InstrumentationClient, InstrumentationRpcClient
+from dynamiq.qmp import QmpClient
 
 
 HELPER = Path(__file__).resolve().parent / "helpers" / "fake_runtime_server.py"

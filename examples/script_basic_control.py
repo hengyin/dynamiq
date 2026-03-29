@@ -12,7 +12,7 @@ Demonstrates:
 
 from pathlib import Path
 
-from interactive_analysis.script_api import ScriptSession
+from dynamiq.script_api import ScriptSession
 
 # Use the sample target from the repo
 SAMPLE_TARGET = Path(__file__).parent / "sample_target"

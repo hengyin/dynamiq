@@ -1,5 +1,5 @@
-from interactive_analysis.events import Event, EventType
-from interactive_analysis.instrumentation import AddressRange, event_matches_filters, trace_entry_from_event
+from dynamiq.events import Event, EventType
+from dynamiq.instrumentation import AddressRange, event_matches_filters, trace_entry_from_event
 
 
 def test_address_range_contains_normalized_address() -> None:

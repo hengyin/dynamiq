@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from interactive_analysis.session import AnalysisSession
+from dynamiq.session import AnalysisSession
 
 
 class FakeBackend:
@@ -125,7 +125,7 @@ def test_symbols_exec(monkeypatch) -> None:
             "     1: 0000000000401130    42 FUNC    GLOBAL DEFAULT   14 main\n"
         )
 
-    monkeypatch.setattr("interactive_analysis.session.subprocess.run", fake_run)
+    monkeypatch.setattr("dynamiq.session.subprocess.run", fake_run)
     session = AnalysisSession(backend=FakeBackend(maps_result=[]))
     session.state.target = "/tmp/a.out"
 
@@ -147,7 +147,7 @@ def test_symbols_pie_uses_map_base(monkeypatch) -> None:
             "     1: 0000000000001130    42 FUNC    GLOBAL DEFAULT   14 main\n"
         )
 
-    monkeypatch.setattr("interactive_analysis.session.subprocess.run", fake_run)
+    monkeypatch.setattr("dynamiq.session.subprocess.run", fake_run)
     maps = [{"start": "0x555555554000", "end": "0x555555556000", "perm": "r-x", "name": "a.out"}]
     session = AnalysisSession(backend=FakeBackend(maps_result=maps))
     session.state.target = "/tmp/a.out"
@@ -170,7 +170,7 @@ def test_symbols_pie_prefers_exact_path_with_zero_offset(monkeypatch) -> None:
             "     1: 0000000000001130    42 FUNC    GLOBAL DEFAULT   14 main\n"
         )
 
-    monkeypatch.setattr("interactive_analysis.session.subprocess.run", fake_run)
+    monkeypatch.setattr("dynamiq.session.subprocess.run", fake_run)
     target = "/tmp/bin/a.out"
     maps = [
         {"start": "0x500000000000", "end": "0x500000001000", "perm": "r-x", "path": "/tmp/other/a.out", "offset": "0x0"},
@@ -198,7 +198,7 @@ def test_symbols_pie_falls_back_to_basename_contains(monkeypatch) -> None:
             "     1: 0000000000001130    42 FUNC    GLOBAL DEFAULT   14 main\n"
         )
 
-    monkeypatch.setattr("interactive_analysis.session.subprocess.run", fake_run)
+    monkeypatch.setattr("dynamiq.session.subprocess.run", fake_run)
     target = "/tmp/x/sample_target"
     maps = [
         {"start": "0x400000", "end": "0x402000", "perm": "r-x", "name": "sample_target"},

@@ -1,6 +1,6 @@
 import pytest
 
-from interactive_analysis.models import MemoryMapSnapshot, MemoryReadResult, RegisterSnapshot
+from dynamiq.models import MemoryMapSnapshot, MemoryReadResult, RegisterSnapshot
 
 
 def test_register_snapshot_parses_rpc_result() -> None:

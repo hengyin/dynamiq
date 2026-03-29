@@ -6,8 +6,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
-from interactive_analysis.session import AnalysisSession
+from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from dynamiq.session import AnalysisSession
 
 
 ROOT = Path(__file__).resolve().parent.parent

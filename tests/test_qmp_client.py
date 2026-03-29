@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from interactive_analysis.qmp import QmpClient
+from dynamiq.qmp import QmpClient
 
 
 class FakeReader:

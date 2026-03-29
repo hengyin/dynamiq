@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
 
 
 @pytest.mark.live_qemu

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from interactive_analysis.errors import InvalidStateError
-from interactive_analysis.session import AnalysisSession
+from dynamiq.errors import InvalidStateError
+from dynamiq.session import AnalysisSession
 
 
 class FakeBackend:

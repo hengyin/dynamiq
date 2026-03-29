@@ -1,4 +1,4 @@
-from interactive_analysis.events import Event, EventType
+from dynamiq.events import Event, EventType
 
 
 def test_event_normalizes_hex_addresses() -> None:

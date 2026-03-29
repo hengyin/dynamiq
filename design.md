@@ -432,8 +432,8 @@ Snapshot commands may be present but should gracefully report unsupported backen
 Suggested layout:
 
 ```text
-interactive_analysis/
-  src/interactive_analysis/
+dynamiq/
+  src/dynamiq/
     session.py
     state.py
     events.py

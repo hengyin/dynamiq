@@ -12,8 +12,8 @@ Demonstrates:
 
 from pathlib import Path
 
-from interactive_analysis.script_api import ScriptSession
-from interactive_analysis.script_helpers import (
+from dynamiq.script_api import ScriptSession
+from dynamiq.script_helpers import (
     assert_register_value,
     checkpoint_restore_test,
     collect_trace_between_addresses,

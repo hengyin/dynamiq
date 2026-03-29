@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from interactive_analysis.qemu_user import QemuUserLaunchConfig
+from dynamiq.qemu_user import QemuUserLaunchConfig
 
 
 def pytest_configure(config: pytest.Config) -> None:

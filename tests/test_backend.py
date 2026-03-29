@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
-from interactive_analysis.errors import InvalidStateError, SessionTimeoutError
+from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from dynamiq.errors import InvalidStateError, SessionTimeoutError
 
 
 class FakeQmpClient:

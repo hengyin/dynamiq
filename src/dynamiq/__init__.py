@@ -1,6 +1,22 @@
-"""Compatibility package alias for interactive_analysis."""
+from .events import Event, EventType, EventFilterConfig
+from .models import MemoryMapSnapshot, MemoryReadResult, RegisterSnapshot
+from .qemu_user import QemuUserLaunchConfig, QemuUserProcessRunner
+from .session import AnalysisSession, SessionConfig
+from .snapshot import Snapshot, SnapshotDiff
+from .state import ExecutionState
 
-from interactive_analysis import *  # noqa: F401,F403
-from interactive_analysis import __all__ as _interactive_analysis_all
-
-__all__ = _interactive_analysis_all
+__all__ = [
+    "AnalysisSession",
+    "Event",
+    "EventFilterConfig",
+    "EventType",
+    "ExecutionState",
+    "MemoryMapSnapshot",
+    "MemoryReadResult",
+    "QemuUserLaunchConfig",
+    "QemuUserProcessRunner",
+    "RegisterSnapshot",
+    "SessionConfig",
+    "Snapshot",
+    "SnapshotDiff",
+]

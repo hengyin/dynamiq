@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
 
 
 def _compile_stdin_echo_binary(workdir: Path) -> Path:

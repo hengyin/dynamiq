@@ -6,7 +6,7 @@ This project is analysis-first: it focuses on controllable execution plus struct
 
 ## Repository Contents
 
-- runtime implementation in `src/interactive_analysis/`
+- runtime implementation in `src/dynamiq/`
 - tests in `tests/`
 - runnable examples in `examples/`
 - architecture and scope notes in `design.md`
@@ -126,7 +126,7 @@ PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 Backward-compatible module path is still supported:
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m interactive_analysis.mcp_server
+PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 ```
 
 ### Supported MCP methods

@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import pytest
 
-from interactive_analysis.backends.base import BackendAdapter
-from interactive_analysis.errors import InvalidStateError
-from interactive_analysis.script_api import ScriptSession
-from interactive_analysis.session import SessionConfig
-from interactive_analysis.state import ExecutionState
+from dynamiq.backends.base import BackendAdapter
+from dynamiq.errors import InvalidStateError
+from dynamiq.script_api import ScriptSession
+from dynamiq.session import SessionConfig
+from dynamiq.state import ExecutionState
 
 
 class MockBackend(BackendAdapter):

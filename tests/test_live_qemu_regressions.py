@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
-from interactive_analysis.errors import SessionTimeoutError
-from interactive_analysis.session import AnalysisSession
+from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from dynamiq.errors import SessionTimeoutError
+from dynamiq.session import AnalysisSession
 
 
 def _compile_breakpoint_stress_binary(workdir: Path) -> Path:

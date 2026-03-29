@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from interactive_analysis.session import AnalysisSession
+from dynamiq.session import AnalysisSession
 
 
 class FakeBacktraceBackend:

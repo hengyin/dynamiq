@@ -20,7 +20,7 @@ The **Scripting API** (`ScriptSession` class) is designed for:
 ## Quick Start
 
 ```python
-from interactive_analysis.script_api import ScriptSession
+from dynamiq.script_api import ScriptSession
 
 # Simplest usage - QEMU auto-configured
 with ScriptSession(target="/path/to/binary", args=["arg1"]) as session:
@@ -63,11 +63,11 @@ with ScriptSession(target="/bin/ls") as session:
 
 ## Helper Utilities
 
-Import from `interactive_analysis.script_helpers`:
+Import from `dynamiq.script_helpers`:
 
 ### Convenience Functions
 ```python
-from interactive_analysis.script_helpers import (
+from dynamiq.script_helpers import (
     run_until_event,
     run_until_instruction,
     collect_trace_between_addresses,
@@ -87,7 +87,7 @@ trace = collect_trace_between_addresses(session, "0x401000", "0x401100")
 
 ### Context Managers
 ```python
-from interactive_analysis.script_helpers import (
+from dynamiq.script_helpers import (
     breakpoint_group,
     trace_region_context,
     MemoryWatch,
@@ -108,7 +108,7 @@ watch.check()  # Returns True if memory changed
 
 ### Assertions for Testing
 ```python
-from interactive_analysis.script_helpers import (
+from dynamiq.script_helpers import (
     assert_memory_pattern,
     assert_register_value,
     checkpoint_restore_test,
@@ -181,7 +181,7 @@ def test_function():
 
 ### Workflow 4: Memory Watching
 ```python
-from interactive_analysis.script_helpers import MemoryWatch
+from dynamiq.script_helpers import MemoryWatch
 
 def on_change(addr, old, new):
     print(f"Memory changed at {addr}: {old.hex()} → {new.hex()}")
@@ -241,7 +241,7 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
 Errors are Python exceptions (not JSON), making debugging easier:
 
 ```python
-from interactive_analysis.errors import InvalidStateError
+from dynamiq.errors import InvalidStateError
 
 try:
     session.read_memory("0x401000", 1000000)  # Size too large

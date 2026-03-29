@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from interactive_analysis.errors import InvalidStateError, SessionTimeoutError
-from interactive_analysis.mcp_server import InteractiveAnalysisMcpServer
+from dynamiq.errors import InvalidStateError, SessionTimeoutError
+from dynamiq.mcp_server import InteractiveAnalysisMcpServer
 
 
 class FakeSession:

@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from interactive_analysis.instrumentation import InstrumentationRpcClient
-from interactive_analysis.instrumentation.rpc import InstrumentationRpcError
+from dynamiq.instrumentation import InstrumentationRpcClient
+from dynamiq.instrumentation.rpc import InstrumentationRpcError
 
 
 class FakeReader:

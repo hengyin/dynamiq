@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 
-from interactive_analysis.instrumentation import InstrumentationClient
+from dynamiq.instrumentation import InstrumentationClient
 
 
 class FakeReader:
