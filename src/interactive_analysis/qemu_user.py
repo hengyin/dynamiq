@@ -75,6 +75,7 @@ class QemuUserLaunchConfig:
     env: dict[str, str] = field(default_factory=dict)
     instrumentation_event_socket: str | None = None
     instrumentation_rpc_socket: str | None = None
+    instrumentation_trace_file: str | None = None
     extra_args: list[str] = field(default_factory=list)
     inherit_stderr: bool = False
 
@@ -95,6 +96,7 @@ class QemuUserLaunchConfig:
             env={str(key): str(value) for key, value in dict(qemu_config.get("env") or {}).items()},
             instrumentation_event_socket=qemu_config.get("instrumentation_socket_path"),
             instrumentation_rpc_socket=qemu_config.get("instrumentation_rpc_socket_path"),
+            instrumentation_trace_file=qemu_config.get("instrumentation_trace_file_path"),
             extra_args=[str(item) for item in list(qemu_config.get("qemu_args") or [])],
             inherit_stderr=bool(qemu_config.get("inherit_stderr", False)),
         )
@@ -113,6 +115,8 @@ class QemuUserLaunchConfig:
             env["IA_EVENT_SOCKET"] = self.instrumentation_event_socket
         if self.instrumentation_rpc_socket:
             env["IA_RPC_SOCKET"] = self.instrumentation_rpc_socket
+        if self.instrumentation_trace_file:
+            env["IA_TRACE_FILE"] = self.instrumentation_trace_file
         return env
 
     def to_backend_config(self, launch: bool = True) -> dict[str, Any]:
@@ -121,6 +125,7 @@ class QemuUserLaunchConfig:
             "qemu_user_path": self.qemu_user_path,
             "instrumentation_socket_path": self.instrumentation_event_socket,
             "instrumentation_rpc_socket_path": self.instrumentation_rpc_socket,
+            "instrumentation_trace_file_path": self.instrumentation_trace_file,
             "qemu_args": list(self.extra_args),
             "env": dict(self.env),
             "inherit_stderr": self.inherit_stderr,

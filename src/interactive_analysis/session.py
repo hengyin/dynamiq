@@ -7,7 +7,7 @@ from typing import Any
 
 from .annotations import Annotation
 from .backends.base import BackendAdapter
-from .errors import InvalidStateError
+from .errors import InvalidStateError, UnsupportedOperationError
 from .snapshot import Snapshot
 from .state import ExecutionState
 
@@ -46,6 +46,10 @@ class AnalysisSession:
         self.state.target = target
         self.state.args = call_args
         self.state.cwd = cwd
+        self.state.trace_active = False
+        self.state.trace_event_types = []
+        self.state.trace_address_ranges = []
+        self.state.trace_start_head = 0
         self.state.capabilities = self.backend.capabilities()
         self._merge_state(self.backend.get_state())
         return self._response("start", {"target": target})
@@ -60,9 +64,6 @@ class AnalysisSession:
             self.state.session_status = "paused"
             return self._response("pause", {"status": "paused", "noop": True})
         return self._forward("pause", self.backend.pause(timeout))
-
-    def run_until_event(self, event_types: list[str], timeout: float = 5.0) -> dict[str, Any]:
-        return self._forward("run_until_event", self.backend.run_until_event(event_types, timeout))
 
     def run_until_address(self, address: str, timeout: float = 5.0) -> dict[str, Any]:
         return self._forward("run_until_address", self.backend.run_until_address(address, timeout))
@@ -101,66 +102,83 @@ class AnalysisSession:
     def bp_run(self, timeout: float = 5.0, max_steps: int = 10000) -> dict[str, Any]:
         if not self.breakpoints:
             raise InvalidStateError("no breakpoints configured")
+        result = self.break_at_addresses([hex(item) for item in self.breakpoints], timeout=timeout, max_steps=max_steps)
+        return self._response("bp_run", dict(result.get("result", {})))
+
+    def break_at_addresses(
+        self,
+        addresses: list[str],
+        timeout: float = 5.0,
+        max_steps: int = 10000,
+    ) -> dict[str, Any]:
+        if not addresses:
+            raise InvalidStateError("at least one address is required")
         if max_steps < 0:
             raise InvalidStateError("max_steps must be >= 0")
-        ordered = sorted(set(self.breakpoints))
-        current_pc: int | None = None
-        try:
-            registers = self.get_registers(["rip", "eip", "pc"])["result"].get("registers", {})
-        except Exception:
-            # Keep breakpoint execution usable even if live register reads are unavailable.
-            registers = {}
-        for key in ("rip", "eip", "pc"):
-            value = registers.get(key)
-            parsed = self._parse_optional_address(value)
-            if parsed is not None:
-                current_pc = parsed
-                break
-        if current_pc is None:
-            # Fallback for runtimes/channels where live register reads are not available.
-            current_pc = self._parse_optional_address(self.state.pc)
-        if current_pc is not None and current_pc in ordered:
-            # Continue semantics: if currently stopped on a breakpoint,
-            # advance once so "run" does not re-hit the same address with steps=0.
-            stepped_pc: int | None = None
+        targets = sorted({self._parse_address(item) for item in addresses})
+        backend_break = getattr(self.backend, "break_at_addresses", None)
+        if callable(backend_break):
             try:
-                step_result = self.step(1, timeout=timeout)
-                stepped_pc = self._parse_optional_address(step_result.get("result", {}).get("pc"))
+                return self._forward(
+                    "break_at_addresses",
+                    backend_break(
+                        [hex(item) for item in targets],
+                        timeout=timeout,
+                        max_steps=max_steps,
+                    ),
+                )
+            except UnsupportedOperationError:
+                pass
+
+        def _read_live_pc() -> int | None:
+            live_pc: int | None = None
+            try:
+                registers = self.get_registers(["rip", "eip", "pc"])["result"].get("registers", {})
             except Exception:
-                stepped_pc = None
-            if stepped_pc is None:
-                try:
-                    registers = self.get_registers(["rip", "eip", "pc"])["result"].get("registers", {})
-                except Exception:
-                    registers = {}
-                for key in ("rip", "eip", "pc"):
-                    value = registers.get(key)
-                    parsed = self._parse_optional_address(value)
-                    if parsed is not None:
-                        stepped_pc = parsed
-                        break
-            if stepped_pc is not None:
-                current_pc = stepped_pc
+                registers = {}
+            for key in ("rip", "eip", "pc"):
+                value = registers.get(key)
+                parsed = self._parse_optional_address(value)
+                if parsed is not None:
+                    live_pc = parsed
+                    break
+            if live_pc is None:
+                live_pc = self._parse_optional_address(self.state.pc)
+            return live_pc
 
-        if current_pc is not None:
-            forward = [bp for bp in ordered if bp > current_pc]
-            selected = forward[0] if forward else ordered[0]
-        else:
-            selected = ordered[0]
+        current_pc = _read_live_pc()
+        steps = 0
 
-        direct = self.run_until_address(hex(selected), timeout=timeout)
-        matched = direct["result"].get("matched_address")
-        if not isinstance(matched, str):
-            matched = hex(selected)
-        return self._response(
-            "bp_run",
-            {
-                "matched_address": matched.lower(),
-                "selected_address": hex(selected),
-                "breakpoints": [hex(item) for item in ordered],
-                "steps": 0,
-            },
-        )
+        if current_pc is not None and current_pc in targets:
+            # Continue semantics: do not immediately re-hit the current stop address.
+            if max_steps == 0:
+                raise InvalidStateError("max_steps exceeded before hitting any requested address")
+            step_result = self.step(1, timeout=timeout)
+            steps += 1
+            current_pc = self._parse_optional_address(step_result.get("result", {}).get("pc"))
+            if current_pc is None:
+                current_pc = _read_live_pc()
+
+        while steps <= max_steps:
+            if current_pc is not None and current_pc in targets:
+                matched = hex(current_pc)
+                return self._response(
+                    "break_at_addresses",
+                    {
+                        "matched_address": matched,
+                        "breakpoints": [hex(item) for item in targets],
+                        "steps": steps,
+                    },
+                )
+            if steps == max_steps:
+                break
+            step_result = self.step(1, timeout=timeout)
+            steps += 1
+            current_pc = self._parse_optional_address(step_result.get("result", {}).get("pc"))
+            if current_pc is None:
+                current_pc = _read_live_pc()
+
+        raise InvalidStateError("max_steps exceeded before hitting any requested address")
 
     def write_stdin(self, data: str | bytes) -> dict[str, Any]:
         return self._forward("write_stdin", self.backend.write_stdin(data))
@@ -318,6 +336,77 @@ class AnalysisSession:
     def get_trace(self, limit: int = 100) -> dict[str, Any]:
         return self._forward("get_trace", self.backend.get_trace(limit))
 
+    def trace_start(
+        self,
+        event_types: list[str] | None = None,
+        address_ranges: list[tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        response = self._forward(
+            "trace_start",
+            self.backend.configure_event_filters(event_types=event_types, address_ranges=address_ranges),
+        )
+        filters = response.get("result", {}).get("filters", {})
+        trace_event_types = filters.get("event_types", []) if isinstance(filters, dict) else []
+        trace_address_ranges = filters.get("address_ranges", []) if isinstance(filters, dict) else []
+        self.state.trace_active = True
+        self.state.trace_event_types = list(trace_event_types if isinstance(trace_event_types, list) else [])
+        self.state.trace_address_ranges = list(trace_address_ranges if isinstance(trace_address_ranges, list) else [])
+        self.state.trace_start_head = int(self.state.trace_head)
+        return self._response(
+            "trace_start",
+            {
+                "filters": filters,
+                "trace_active": True,
+                "trace_start_head": self.state.trace_start_head,
+            },
+        )
+
+    def trace_stop(self) -> dict[str, Any]:
+        self.state.trace_active = False
+        return self._response(
+            "trace_stop",
+            {
+                "trace_active": False,
+                "trace_start_head": self.state.trace_start_head,
+            },
+        )
+
+    def trace_status(self) -> dict[str, Any]:
+        return self._response(
+            "trace_status",
+            {
+                "trace_active": self.state.trace_active,
+                "trace_event_types": list(self.state.trace_event_types),
+                "trace_address_ranges": list(self.state.trace_address_ranges),
+                "trace_start_head": self.state.trace_start_head,
+                "trace_head": self.state.trace_head,
+            },
+        )
+
+    def trace_get(self, limit: int = 100, since_start: bool = True) -> dict[str, Any]:
+        effective_limit = self.config.max_trace_entries if since_start else limit
+        trace_response = self._forward("get_trace", self.backend.get_trace(effective_limit))
+        trace_items = trace_response.get("result", {}).get("trace", [])
+        if not isinstance(trace_items, list):
+            trace_items = []
+        start_head = self.state.trace_start_head if since_start else 0
+        if since_start:
+            trace_items = [
+                item for item in trace_items
+                if isinstance(item, dict) and isinstance(item.get("index"), int) and int(item["index"]) >= start_head
+            ]
+        if limit > 0:
+            trace_items = trace_items[-limit:]
+        return self._response(
+            "trace_get",
+            {
+                "trace": trace_items,
+                "since_start": since_start,
+                "trace_start_head": self.state.trace_start_head,
+                "trace_head": self.state.trace_head,
+            },
+        )
+
     def annotate(
         self,
         address: str,
@@ -353,6 +442,7 @@ class AnalysisSession:
     def close(self) -> dict[str, Any]:
         self.backend.close()
         self.state.session_status = "closed"
+        self.state.trace_active = False
         return self._response("close", {})
 
     def _forward(self, command: str, payload: dict[str, Any]) -> dict[str, Any]:

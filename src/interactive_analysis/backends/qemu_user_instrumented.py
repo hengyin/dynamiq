@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import time
@@ -8,7 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import InvalidStateError, SessionTimeoutError, UnsupportedOperationError
-from ..instrumentation import InstrumentationClient, InstrumentationRpcClient, trace_entry_from_event
+from ..events import Event, EventType
+from ..instrumentation import (
+    AddressRange,
+    InstrumentationClient,
+    InstrumentationRpcClient,
+    event_matches_filters,
+    trace_entry_from_event,
+)
 from ..models import MemoryMapSnapshot, MemoryReadResult, RegisterSnapshot
 from ..qemu_user import QemuUserLaunchConfig, QemuUserProcessRunner
 from ..qmp import QmpClient, QmpController
@@ -51,8 +59,14 @@ class QemuUserInstrumentedBackend:
             "capabilities": self._capabilities.to_dict(),
         }
         self._trace: deque[dict[str, Any]] = deque(maxlen=4096)
+        self._trace_event_ids: set[str] = set()
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._auto_socket_root: Path | None = None
+        self._trace_file_path: Path | None = None
+        self._trace_file_offset: int = 0
+        self._trace_raw_recent: deque[dict[str, Any]] = deque(maxlen=1024)
+        self._trace_filter_types: set[EventType] = set()
+        self._trace_filter_ranges: list[AddressRange] = []
 
     @staticmethod
     def _default_capabilities() -> BackendCapabilities:
@@ -81,111 +95,124 @@ class QemuUserInstrumentedBackend:
     ) -> None:
         qemu_config = dict(qemu_config or {})
         self._capabilities = self._default_capabilities()
-        if qemu_config.get("launch"):
-            qemu_config = self._ensure_launch_sockets(qemu_config)
-        if qemu_config.get("launch"):
-            if self._process_runner is None:
-                self._process_runner = QemuUserProcessRunner()
-            launch_config = QemuUserLaunchConfig.from_target(
-                target=target,
-                args=args,
-                cwd=cwd,
-                qemu_config=qemu_config,
-            )
-            self._process_runner.start(launch_config)
-        if self._qmp is None:
-            socket_path = qemu_config.get("qmp_socket_path")
-            if socket_path:
-                self._qmp = QmpClient(socket_path=socket_path, timeout=float(qemu_config.get("qmp_timeout", 2.0)))
-                self._controller = QmpController(self._qmp)
-        if self._instrumentation is None:
-            socket_path = qemu_config.get("instrumentation_socket_path")
-            if socket_path:
-                self._instrumentation = InstrumentationClient(
-                    socket_path=socket_path,
-                    max_events=int(qemu_config.get("max_recent_events", 1024)),
-                    timeout=float(qemu_config.get("instrumentation_timeout", 0.1)),
-                )
-        if self._instrumentation_rpc is None:
-            socket_path = qemu_config.get("instrumentation_rpc_socket_path")
-            if socket_path:
-                self._instrumentation_rpc = InstrumentationRpcClient(
-                    socket_path=socket_path,
-                    timeout=float(qemu_config.get("instrumentation_rpc_timeout", 2.0)),
-                )
-        if self._instrumentation is None:
-            self._capabilities.trace_basic_block = False
-            self._capabilities.trace_branch = False
-            self._capabilities.trace_memory = False
-            self._capabilities.trace_syscall = False
-            if self._instrumentation_rpc is None:
-                self._capabilities.run_until_address = False
-                self._capabilities.single_step = False
-        overrides = dict(qemu_config.get("capabilities_override") or {})
-        if qemu_config.get("launch"):
-            if self._instrumentation is not None:
-                socket_path = getattr(self._instrumentation, "socket_path", None)
-                if socket_path:
-                    self._wait_for_socket_path(
-                        socket_path,
-                        timeout=float(qemu_config.get("launch_connect_timeout", 5.0)),
-                    )
-            if self._instrumentation_rpc is not None:
-                socket_path = getattr(self._instrumentation_rpc, "socket_path", None)
-                if socket_path:
-                    self._wait_for_socket_path(
-                        socket_path,
-                        timeout=float(qemu_config.get("launch_connect_timeout", 5.0)),
-                    )
         try:
-            if self._controller is not None:
-                self._controller.connect()
-            if self._instrumentation is not None:
-                self._instrumentation.connect()
+            if qemu_config.get("launch"):
+                qemu_config = self._ensure_launch_sockets(qemu_config)
+            if qemu_config.get("launch"):
+                if self._process_runner is None:
+                    self._process_runner = QemuUserProcessRunner()
+                launch_config = QemuUserLaunchConfig.from_target(
+                    target=target,
+                    args=args,
+                    cwd=cwd,
+                    qemu_config=qemu_config,
+                )
+                self._process_runner.start(launch_config)
+            if self._qmp is None:
+                socket_path = qemu_config.get("qmp_socket_path")
+                if socket_path:
+                    self._qmp = QmpClient(socket_path=socket_path, timeout=float(qemu_config.get("qmp_timeout", 2.0)))
+                    self._controller = QmpController(self._qmp)
+            if self._instrumentation is None:
+                socket_path = qemu_config.get("instrumentation_socket_path")
+                if socket_path:
+                    self._instrumentation = InstrumentationClient(
+                        socket_path=socket_path,
+                        max_events=int(qemu_config.get("max_recent_events", 1024)),
+                        timeout=float(qemu_config.get("instrumentation_timeout", 0.1)),
+                    )
+            if self._instrumentation_rpc is None:
+                socket_path = qemu_config.get("instrumentation_rpc_socket_path")
+                if socket_path:
+                    self._instrumentation_rpc = InstrumentationRpcClient(
+                        socket_path=socket_path,
+                        timeout=float(qemu_config.get("instrumentation_rpc_timeout", 2.0)),
+                    )
+            trace_file_path = qemu_config.get("instrumentation_trace_file_path")
+            self._trace_file_path = Path(trace_file_path) if isinstance(trace_file_path, str) and trace_file_path else None
+            self._trace_file_offset = 0
+            self._trace_raw_recent.clear()
+            if self._instrumentation is None:
+                trace_available = self._trace_file_path is not None
+                self._capabilities.trace_basic_block = trace_available
+                self._capabilities.trace_branch = trace_available
+                self._capabilities.trace_memory = trace_available
+                self._capabilities.trace_syscall = trace_available
+                if self._instrumentation_rpc is None:
+                    self._capabilities.run_until_address = False
+                    self._capabilities.single_step = False
+            overrides = dict(qemu_config.get("capabilities_override") or {})
+            if qemu_config.get("launch"):
+                if self._instrumentation is not None:
+                    socket_path = getattr(self._instrumentation, "socket_path", None)
+                    if socket_path:
+                        self._wait_for_socket_path(
+                            socket_path,
+                            timeout=float(qemu_config.get("launch_connect_timeout", 5.0)),
+                        )
+                if self._instrumentation_rpc is not None:
+                    socket_path = getattr(self._instrumentation_rpc, "socket_path", None)
+                    if socket_path:
+                        self._wait_for_socket_path(
+                            socket_path,
+                            timeout=float(qemu_config.get("launch_connect_timeout", 5.0)),
+                        )
+            try:
+                if self._controller is not None:
+                    self._controller.connect()
+                if self._instrumentation is not None:
+                    self._instrumentation.connect()
+                if self._instrumentation_rpc is not None:
+                    self._instrumentation_rpc.connect()
+            except Exception as exc:
+                process_summary = None
+                if self._process_runner is not None:
+                    process_summary = self._process_runner.exited_summary()
+                if process_summary is not None:
+                    raise InvalidStateError(f"{exc}; {process_summary}") from exc
+                raise
             if self._instrumentation_rpc is not None:
-                self._instrumentation_rpc.connect()
-        except Exception as exc:
-            process_summary = None
-            if self._process_runner is not None:
-                process_summary = self._process_runner.exited_summary()
-            if process_summary is not None:
-                raise InvalidStateError(f"{exc}; {process_summary}") from exc
+                rpc_caps = self._rpc_request("capabilities")
+                self._validate_rpc_capabilities(rpc_caps)
+                self._apply_rpc_capabilities(rpc_caps)
+            if overrides:
+                for key, value in overrides.items():
+                    if hasattr(self._capabilities, key):
+                        setattr(self._capabilities, key, bool(value))
+            launched_qemu_user_path = None
+            if self._process_runner is not None and self._process_runner.config is not None:
+                launched_qemu_user_path = self._process_runner.config.qemu_user_path
+            self._state.update(
+                {
+                    "session_status": "idle",
+                    "target": target,
+                    "args": list(args),
+                    "cwd": cwd,
+                    "stop_reason": None,
+                    "exit_code": None,
+                    "exit_signal": None,
+                    "pc": None,
+                    "current_thread_id": None,
+                    "registers": {},
+                    "memory_maps": [],
+                    "last_event_id": None,
+                    "launched_qemu_user_path": launched_qemu_user_path,
+                    "instrumentation_rpc_socket_path": qemu_config.get("instrumentation_rpc_socket_path"),
+                    "rpc_protocol_version": self._RPC_PROTOCOL_VERSION if self._instrumentation_rpc is not None else None,
+                    "rpc_capabilities": dict(rpc_caps.get("capabilities", {})) if self._instrumentation_rpc is not None else {},
+                    "recent_events": [],
+                    "ingestion_stats": self._instrumentation.stats.to_dict() if self._instrumentation is not None else {},
+                    "capabilities": self._capabilities.to_dict(),
+                }
+            )
+            self._refresh_trace_from_file()
+            self._started = True
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                pass
             raise
-        if self._instrumentation_rpc is not None:
-            rpc_caps = self._rpc_request("capabilities")
-            self._validate_rpc_capabilities(rpc_caps)
-            self._apply_rpc_capabilities(rpc_caps)
-        if overrides:
-            for key, value in overrides.items():
-                if hasattr(self._capabilities, key):
-                    setattr(self._capabilities, key, bool(value))
-        launched_qemu_user_path = None
-        if self._process_runner is not None and self._process_runner.config is not None:
-            launched_qemu_user_path = self._process_runner.config.qemu_user_path
-        self._state.update(
-            {
-                "session_status": "idle",
-                "target": target,
-                "args": list(args),
-                "cwd": cwd,
-                "stop_reason": None,
-                "exit_code": None,
-                "exit_signal": None,
-                "pc": None,
-                "current_thread_id": None,
-                "registers": {},
-                "memory_maps": [],
-                "last_event_id": None,
-                "launched_qemu_user_path": launched_qemu_user_path,
-                "instrumentation_rpc_socket_path": qemu_config.get("instrumentation_rpc_socket_path"),
-                "rpc_protocol_version": self._RPC_PROTOCOL_VERSION if self._instrumentation_rpc is not None else None,
-                "rpc_capabilities": dict(rpc_caps.get("capabilities", {})) if self._instrumentation_rpc is not None else {},
-                "recent_events": [],
-                "ingestion_stats": self._instrumentation.stats.to_dict() if self._instrumentation is not None else {},
-                "capabilities": self._capabilities.to_dict(),
-            }
-        )
-        self._started = True
 
     def resume(self, timeout: float) -> dict[str, Any]:
         self._require_started()
@@ -215,89 +242,59 @@ class QemuUserInstrumentedBackend:
         self._record_stop_transition("pause", before_status, before_pc)
         return self._response({})
 
-    def run_until_event(self, event_types: list[str], timeout: float) -> dict[str, Any]:
-        self._require_started()
-        if self._instrumentation is None:
-            raise UnsupportedOperationError("backend does not have an instrumentation event channel configured")
-        start_seq = self._instrumentation.latest_seq()
-        self.resume(timeout)
-        try:
-            matched = self._instrumentation.wait_for_event(event_types, timeout, min_seq_exclusive=start_seq)
-        except TimeoutError as exc:
-            raise SessionTimeoutError(str(exc)) from exc
-        self.pause(timeout)
-        try:
-            pause_event = self._instrumentation.wait_for_event(
-                ["execution_paused"],
-                timeout,
-                min_seq_exclusive=int(matched["seq"]),
-            )
-        except TimeoutError as exc:
-            raise SessionTimeoutError("timed out waiting for execution_paused acknowledgement") from exc
-        self._state.update(
-            {
-                "session_status": "paused",
-                "pc": pause_event.get("pc") or matched.get("pc"),
-                "current_thread_id": matched.get("thread_id"),
-                "last_event_id": matched.get("event_id"),
-            }
-        )
-        self._record_trace(matched)
-        self._record_trace(pause_event)
-        self._refresh_recent_events()
-        return self._response({"matched_event": matched})
-
     def run_until_address(self, address: str, timeout: float) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.run_until_address:
             raise UnsupportedOperationError("backend does not support run_until_address")
         before_status = self._state.get("session_status")
         before_pc = self._state.get("pc")
-        if self._instrumentation is None:
-            current_pc = self._state.get("pc")
-            if isinstance(current_pc, str) and current_pc.lower() == address.lower():
-                self._state["session_status"] = "paused"
-                self._state["pc"] = current_pc.lower()
-                self._record_stop_transition("run_until_address(already_at_pc)", before_status, before_pc)
-                return self._response({"matched_address": current_pc.lower(), "status": "paused", "pc": current_pc.lower()})
-            result = self._rpc_request("resume_until_address", {"address": address}, timeout=timeout)
-            status = result.get("status")
-            if isinstance(status, str):
-                self._state["session_status"] = status
-            pc = result.get("pc")
-            if isinstance(pc, str):
-                self._state["pc"] = pc
-            self._record_stop_transition("run_until_address", before_status, before_pc)
-            return self._response({"matched_address": address, **result})
-        if self._instrumentation is None:
-            raise UnsupportedOperationError("backend does not have an instrumentation event channel configured")
-        start_seq = self._instrumentation.latest_seq()
-        self.resume(timeout)
+        current_pc = self._state.get("pc")
+        if isinstance(current_pc, str) and current_pc.lower() == address.lower():
+            self._state["session_status"] = "paused"
+            self._state["pc"] = current_pc.lower()
+            self._record_stop_transition("run_until_address(already_at_pc)", before_status, before_pc)
+            return self._response({"matched_address": current_pc.lower(), "status": "paused", "pc": current_pc.lower()})
+        result = self._rpc_request("resume_until_address", {"address": address}, timeout=timeout)
+        status = result.get("status")
+        if isinstance(status, str):
+            self._state["session_status"] = status
+        pc = result.get("pc")
+        if isinstance(pc, str):
+            self._state["pc"] = pc
+        self._record_stop_transition("run_until_address", before_status, before_pc)
+        return self._response({"matched_address": address, **result})
+
+    def break_at_addresses(self, addresses: list[str], timeout: float, max_steps: int = 10000) -> dict[str, Any]:
+        del max_steps
+        self._require_started()
+        if not addresses:
+            raise InvalidStateError("at least one address is required")
+        if self._instrumentation_rpc is None:
+            raise UnsupportedOperationError("backend does not have an instrumentation RPC channel configured")
+        normalized = [str(item).strip() for item in addresses if str(item).strip()]
+        if not normalized:
+            raise InvalidStateError("at least one address is required")
+        if len(normalized) == 1:
+            return self.run_until_address(normalized[0], timeout=timeout)
+        before_status = self._state.get("session_status")
+        before_pc = self._state.get("pc")
         try:
-            matched = self._instrumentation.wait_for_address(address, timeout, min_seq_exclusive=start_seq)
-        except TimeoutError as exc:
-            raise SessionTimeoutError(str(exc)) from exc
-        self.pause(timeout)
-        try:
-            pause_event = self._instrumentation.wait_for_event(
-                ["execution_paused"],
-                timeout,
-                min_seq_exclusive=int(matched["seq"]),
-            )
-        except TimeoutError as exc:
-            raise SessionTimeoutError("timed out waiting for execution_paused acknowledgement") from exc
-        self._state.update(
-            {
-                "session_status": "paused",
-                "pc": pause_event.get("pc") or matched.get("pc"),
-                "current_thread_id": matched.get("thread_id"),
-                "last_event_id": matched.get("event_id"),
-            }
-        )
-        self._record_trace(matched)
-        self._record_trace(pause_event)
-        self._refresh_recent_events()
-        return self._response({"matched_event": matched})
+            result = self._rpc_request("resume_until_any_address", {"addresses": normalized}, timeout=timeout)
+        except Exception as exc:
+            if "unknown instrumentation RPC method" in str(exc):
+                raise UnsupportedOperationError("backend RPC does not support resume_until_any_address") from exc
+            raise
+        status = result.get("status")
+        if isinstance(status, str):
+            self._state["session_status"] = status
+        pc = result.get("pc")
+        if isinstance(pc, str):
+            self._state["pc"] = pc
+        matched_pc = result.get("matched_pc")
+        if isinstance(matched_pc, str):
+            result["matched_address"] = matched_pc
+        self._record_stop_transition("break_at_addresses", before_status, before_pc)
+        return self._response(result)
 
     def step(self, count: int, timeout: float) -> dict[str, Any]:
         self._require_started()
@@ -426,15 +423,33 @@ class QemuUserInstrumentedBackend:
         event_types: list[str] | None = None,
     ) -> dict[str, Any]:
         self._require_started()
-        if self._instrumentation is None:
+        if self._instrumentation is not None:
+            events = self._instrumentation.get_recent_events(limit=limit, event_types=event_types)
+            self._state["recent_events"] = events
+            self._state["ingestion_stats"] = self._instrumentation.stats.to_dict()
+            return self._response({"events": events})
+        if self._trace_file_path is None:
             raise UnsupportedOperationError("backend does not have an instrumentation event channel configured")
-        events = self._instrumentation.get_recent_events(limit=limit, event_types=event_types)
+        self._refresh_trace_from_file()
+        events = list(self._trace_raw_recent)
+        if event_types:
+            requested = {EventType(item) for item in event_types}
+            events = [event for event in events if EventType(event["type"]) in requested]
+        events = events[-limit:]
         self._state["recent_events"] = events
-        self._state["ingestion_stats"] = self._instrumentation.stats.to_dict()
+        self._state["ingestion_stats"] = {
+            "events_received": len(self._trace),
+            "events_dropped": 0,
+            "malformed_events": 0,
+            "sequence_gaps": 0,
+            "source": "trace_file",
+            "trace_file_path": str(self._trace_file_path),
+        }
         return self._response({"events": events})
 
     def get_trace(self, limit: int) -> dict[str, Any]:
         self._require_started()
+        self._refresh_trace_from_file()
         trace = list(self._trace)[-limit:]
         return self._response({"trace": trace})
 
@@ -444,9 +459,17 @@ class QemuUserInstrumentedBackend:
         address_ranges: list[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
         self._require_started()
-        if self._instrumentation is None:
+        if self._instrumentation is not None:
+            config = self._instrumentation.configure_filters(event_types, address_ranges)
+        elif self._trace_file_path is not None:
+            self._trace_filter_types = {EventType(item) for item in event_types} if event_types else set()
+            self._trace_filter_ranges = [AddressRange(start, end) for start, end in (address_ranges or [])]
+            config = {
+                "event_types": sorted(item.value for item in self._trace_filter_types),
+                "address_ranges": [(item.start, item.end) for item in self._trace_filter_ranges],
+            }
+        else:
             raise UnsupportedOperationError("backend does not have an instrumentation event channel configured")
-        config = self._instrumentation.configure_filters(event_types, address_ranges)
         return self._response({"filters": config})
 
     def get_state(self) -> dict[str, Any]:
@@ -467,6 +490,8 @@ class QemuUserInstrumentedBackend:
                 self._state["session_status"] = status["status"]
         if self._instrumentation is not None:
             self._refresh_recent_events()
+        else:
+            self._refresh_trace_from_file()
         return dict(self._state)
 
     def capabilities(self) -> dict[str, bool]:
@@ -512,14 +537,27 @@ class QemuUserInstrumentedBackend:
         self._state["memory_maps"] = []
         self._state["last_event_id"] = None
         self._state["capabilities"] = self._capabilities.to_dict()
+        self._trace_file_path = None
+        self._trace_file_offset = 0
+        self._trace_raw_recent.clear()
+        self._trace_filter_types = set()
+        self._trace_filter_ranges = []
+        self._trace.clear()
+        self._trace_event_ids.clear()
 
     def _response(self, result: dict[str, Any]) -> dict[str, Any]:
         self._sync_process_state()
         if self._instrumentation is not None:
             self._refresh_recent_events()
+        else:
+            self._refresh_trace_from_file()
         return {"state": dict(self._state), "result": result}
 
     def _record_trace(self, event: dict[str, Any]) -> None:
+        event_id = event.get("event_id")
+        if not isinstance(event_id, str) or event_id in self._trace_event_ids:
+            return
+        self._trace_event_ids.add(event_id)
         entry = trace_entry_from_event(len(self._trace), event)
         self._trace.append(entry)
         self._state["trace_head"] = len(self._trace)
@@ -529,6 +567,45 @@ class QemuUserInstrumentedBackend:
             return
         self._state["recent_events"] = self._instrumentation.get_recent_events(limit=10)
         self._state["ingestion_stats"] = self._instrumentation.stats.to_dict()
+
+    def _refresh_trace_from_file(self) -> None:
+        if self._trace_file_path is None:
+            return
+        path = self._trace_file_path
+        if not path.exists():
+            return
+        malformed_events = 0
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            stream.seek(self._trace_file_offset)
+            while True:
+                line = stream.readline()
+                if not line:
+                    break
+                self._trace_file_offset = stream.tell()
+                payload = line.strip()
+                if payload == "":
+                    continue
+                try:
+                    event = Event.from_dict(json.loads(payload))
+                except Exception:
+                    malformed_events += 1
+                    continue
+                if not event_matches_filters(
+                    event,
+                    event_types=self._trace_filter_types or None,
+                    address_ranges=self._trace_filter_ranges or None,
+                ):
+                    continue
+                event_dict = event.to_dict()
+                self._trace_raw_recent.append(event_dict)
+                self._record_trace(event_dict)
+        if malformed_events:
+            current = dict(self._state.get("ingestion_stats") or {})
+            current["malformed_events"] = int(current.get("malformed_events", 0)) + malformed_events
+            current["source"] = "trace_file"
+            current["trace_file_path"] = str(path)
+            self._state["ingestion_stats"] = current
+        self._state["recent_events"] = list(self._trace_raw_recent)[-10:]
 
     def _require_started(self) -> None:
         if not self._started:
@@ -632,16 +709,33 @@ class QemuUserInstrumentedBackend:
         self._record_stop_transition("process_exit", before_status, before_pc)
 
     def _ensure_launch_sockets(self, qemu_config: dict[str, Any]) -> dict[str, Any]:
-        if qemu_config.get("instrumentation_rpc_socket_path"):
+        need_event = False
+        need_rpc = not bool(qemu_config.get("instrumentation_rpc_socket_path"))
+        need_trace_file = not bool(qemu_config.get("instrumentation_trace_file_path"))
+        if not need_event and not need_rpc and not need_trace_file:
             return qemu_config
-        if self._instrumentation_rpc is not None:
+
+        if need_event and self._instrumentation is not None:
+            socket_path = getattr(self._instrumentation, "socket_path", None)
+            if isinstance(socket_path, str) and socket_path:
+                qemu_config["instrumentation_socket_path"] = socket_path
+                need_event = False
+        if need_rpc and self._instrumentation_rpc is not None:
             socket_path = getattr(self._instrumentation_rpc, "socket_path", None)
             if isinstance(socket_path, str) and socket_path:
                 qemu_config["instrumentation_rpc_socket_path"] = socket_path
-                return qemu_config
-        root = Path(tempfile.mkdtemp(prefix="ia-qemu-rpc-"))
+                need_rpc = False
+        if not need_event and not need_rpc and not need_trace_file:
+            return qemu_config
+
+        root = Path(tempfile.mkdtemp(prefix="ia-qemu-"))
         self._auto_socket_root = root
-        qemu_config["instrumentation_rpc_socket_path"] = str(root / "rpc.sock")
+        if need_event:
+            qemu_config["instrumentation_socket_path"] = str(root / "events.sock")
+        if need_rpc:
+            qemu_config["instrumentation_rpc_socket_path"] = str(root / "rpc.sock")
+        if need_trace_file:
+            qemu_config["instrumentation_trace_file_path"] = str(root / "trace.ndjson")
         return qemu_config
 
     def _append_rpc_history(self, entry: dict[str, Any]) -> None:

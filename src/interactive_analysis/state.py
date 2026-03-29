@@ -28,6 +28,10 @@ class ExecutionState:
     capabilities: dict[str, bool] = field(default_factory=dict)
     recent_events: list[dict[str, Any]] = field(default_factory=list)
     ingestion_stats: dict[str, int] = field(default_factory=dict)
+    trace_active: bool = False
+    trace_event_types: list[str] = field(default_factory=list)
+    trace_address_ranges: list[tuple[str, str]] = field(default_factory=list)
+    trace_start_head: int = 0
     last_rpc_method: str | None = None
     last_rpc_timeout: float | None = None
     last_rpc_params: dict[str, Any] = field(default_factory=dict)
@@ -60,6 +64,10 @@ class ExecutionState:
             "capabilities": dict(self.capabilities),
             "recent_events": list(self.recent_events),
             "ingestion_stats": dict(self.ingestion_stats),
+            "trace_active": self.trace_active,
+            "trace_event_types": list(self.trace_event_types),
+            "trace_address_ranges": list(self.trace_address_ranges),
+            "trace_start_head": self.trace_start_head,
             "last_rpc_method": self.last_rpc_method,
             "last_rpc_timeout": self.last_rpc_timeout,
             "last_rpc_params": dict(self.last_rpc_params),

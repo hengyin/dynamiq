@@ -4,10 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from interactive_analysis.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
-from interactive_analysis.errors import SessionTimeoutError
 from interactive_analysis.instrumentation import InstrumentationClient, InstrumentationRpcClient
 from interactive_analysis.qmp import QmpClient
 
@@ -61,7 +58,7 @@ def test_backend_process_integration_round_trip() -> None:
     )
 
     backend.start("target.bin", [], None, {})
-    stop = backend.run_until_event(["branch"], timeout=1.0)
+    stop = backend.run_until_address("0x401000", timeout=1.0)
     regs = backend.get_registers(["rax"])
     mem = backend.read_memory("0x401000", 2)
     maps = backend.list_memory_maps()
@@ -71,29 +68,11 @@ def test_backend_process_integration_round_trip() -> None:
     backend.close()
 
     assert any(item["type"] == "backend_ready" for item in events_result["result"]["events"])
-    assert stop["result"]["matched_event"]["event_id"] == "e-2"
+    assert stop["result"]["matched_address"] == "0x401000"
     assert regs["result"]["registers"]["rip"] == "0x401000"
     assert mem["result"] == {"address": "0x401000", "size": 2, "bytes": "0102"}
     assert maps["result"]["maps"]["regions"][0]["start"] == "0x400000"
     assert "payload" in events_result["result"]["events"][0]
     assert "index" not in events_result["result"]["events"][0]
-    assert trace_result["result"]["trace"][0]["index"] == 0
-    assert "payload" not in trace_result["result"]["trace"][0]
-    assert any(item["type"] == "execution_paused" for item in trace_result["result"]["trace"])
+    assert trace_result["result"]["trace"] == []
     assert state["registers"]["rax"] == "0x1"
-
-
-def test_backend_process_integration_does_not_rematch_old_branch() -> None:
-    events = InstrumentationClient("events-process", connector=lambda path, timeout: _spawn_channel("events", timeout))
-    rpc = InstrumentationRpcClient("rpc-process", connector=lambda path, timeout: _spawn_channel("rpc", timeout))
-    backend = QemuUserInstrumentedBackend(
-        qmp_client=None,
-        instrumentation_client=events,
-        instrumentation_rpc_client=rpc,
-    )
-
-    backend.start("target.bin", [], None, {})
-    backend.run_until_event(["branch"], timeout=1.0)
-    with pytest.raises(SessionTimeoutError):
-        backend.run_until_event(["branch"], timeout=0.1)
-    backend.close()

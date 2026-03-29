@@ -158,6 +158,9 @@ class FakeInstrumentationRpcClient:
             return {"status": "paused", "blocks_executed": params["count"], "pc": "0x401010"}
         if method == "resume_until_address":
             return {"status": "paused", "pc": params["address"]}
+        if method == "resume_until_any_address":
+            matched = params["addresses"][0]
+            return {"status": "paused", "pc": matched, "matched_pc": matched, "matched": True}
         if method == "single_step":
             return {"status": "paused", "count": params["count"], "executed": params["count"], "pc": "0x401004"}
         if method == "query_status":
@@ -249,31 +252,6 @@ class BadProtocolInstrumentationRpcClient(FakeInstrumentationRpcClient):
         if method == "capabilities":
             return {"protocol_version": 99}
         return super().request(method, params)
-
-
-class TimeoutInstrumentationClient(FakeInstrumentationClient):
-    def wait_for_event(self, event_types: list[str], timeout: float, min_seq_exclusive: int | None = None) -> dict:
-        del min_seq_exclusive
-        raise TimeoutError("timed out waiting for event types: ['branch']")
-
-
-def test_backend_run_until_event_updates_state() -> None:
-    instrumentation = FakeInstrumentationClient()
-    rpc = FakeInstrumentationRpcClient(instrumentation)
-    backend = QemuUserInstrumentedBackend(
-        qmp_client=FakeQmpClient(),
-        instrumentation_client=instrumentation,
-        instrumentation_rpc_client=rpc,
-    )
-    backend.start("target.bin", [], None, {"capabilities_override": {"run_until_address": True}})
-
-    result = backend.run_until_event(["branch"], timeout=1.0)
-
-    assert result["result"]["matched_event"]["event_id"] == "e-1"
-    assert result["state"]["session_status"] == "paused"
-    assert result["state"]["pc"] == "0x401000"
-    assert result["state"]["recent_events"][0]["event_id"] == "e-1"
-    assert rpc.requests[:2] == [("resume", {}), ("pause", {})]
 
 
 def test_backend_start_allows_rpc_only_mode() -> None:
@@ -401,6 +379,23 @@ def test_backend_run_until_address_returns_immediately_when_already_at_address()
     assert result["state"]["pc"] == "0x401000"
 
 
+def test_backend_break_at_addresses_uses_rpc_method() -> None:
+    rpc = FakeInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {"capabilities_override": {"run_until_address": True}})
+
+    result = backend.break_at_addresses(["0x401000", "0x401010"], timeout=1.0, max_steps=10)
+
+    assert rpc.requests[-1] == ("resume_until_any_address", {"addresses": ["0x401000", "0x401010"]})
+    assert result["result"]["matched_address"] == "0x401000"
+    assert result["state"]["pc"] == "0x401000"
+    assert result["state"]["last_stop_transition"]["reason"] == "break_at_addresses"
+
+
 def test_backend_disassemble_uses_rpc_in_rpc_only_mode() -> None:
     rpc = FakeInstrumentationRpcClient()
     backend = QemuUserInstrumentedBackend(
@@ -458,8 +453,6 @@ def test_backend_get_recent_events_returns_event_shape_not_trace_shape() -> None
         instrumentation_rpc_client=FakeInstrumentationRpcClient(instrumentation),
     )
     backend.start("target.bin", [], None, {})
-    backend.run_until_event(["branch"], timeout=1.0)
-
     result = backend.get_recent_events()
 
     assert result["result"]["events"][0]["event_id"] == "e-1"
@@ -475,14 +468,21 @@ def test_backend_trace_returns_trace_shape() -> None:
         instrumentation_rpc_client=FakeInstrumentationRpcClient(instrumentation),
     )
     backend.start("target.bin", [], None, {})
-    backend.run_until_event(["branch"], timeout=1.0)
+    backend._record_trace(
+        {
+            "event_id": "e-1",
+            "type": "branch",
+            "pc": "0x401000",
+            "thread_id": "1",
+            "payload": {"target": "0x401010", "taken": True},
+        }
+    )
 
     result = backend.get_trace(limit=10)
 
     assert result["result"]["trace"][0]["event_id"] == "e-1"
     assert result["result"]["trace"][0]["index"] == 0
     assert "payload" not in result["result"]["trace"][0]
-    assert result["result"]["trace"][1]["type"] == "execution_paused"
 
 
 def test_backend_take_snapshot_records_snapshot_id() -> None:
@@ -496,18 +496,6 @@ def test_backend_take_snapshot_records_snapshot_id() -> None:
 
     with pytest.raises(Exception):
         backend.take_snapshot("snap-1")
-
-
-def test_backend_run_until_event_wraps_timeouts() -> None:
-    backend = QemuUserInstrumentedBackend(
-        qmp_client=FakeQmpClient(),
-        instrumentation_client=TimeoutInstrumentationClient(),
-        instrumentation_rpc_client=FakeInstrumentationRpcClient(),
-    )
-    backend.start("target.bin", [], None, {})
-
-    with pytest.raises(SessionTimeoutError):
-        backend.run_until_event(["branch"], timeout=1.0)
 
 
 def test_backend_configure_filters_returns_ranges() -> None:
@@ -615,6 +603,190 @@ def test_backend_start_launch_auto_configures_rpc_socket_path() -> None:
 
     backend.close()
     assert not Path(rpc_socket).parent.exists()
+
+
+def test_backend_start_launch_auto_configures_rpc_and_trace_paths() -> None:
+    runner = FakeProcessRunner()
+    instrumentation = FakeInstrumentationClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(instrumentation),
+        process_runner=runner,
+    )
+
+    backend.start(
+        "target.bin",
+        [],
+        None,
+        {
+            "launch": True,
+            "qemu_user_path": "/usr/bin/qemu-x86_64",
+        },
+    )
+
+    rpc_socket = runner.config.instrumentation_rpc_socket
+    trace_file = runner.config.instrumentation_trace_file
+    assert isinstance(rpc_socket, str) and rpc_socket.endswith("/rpc.sock")
+    assert isinstance(trace_file, str) and trace_file.endswith("/trace.ndjson")
+    assert Path(rpc_socket).parent.exists()
+    assert Path(trace_file).parent.exists()
+
+    backend.close()
+    assert not Path(trace_file).parent.exists()
+
+
+def test_backend_start_launch_auto_configures_trace_file_path() -> None:
+    runner = FakeProcessRunner()
+    instrumentation = FakeInstrumentationClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(instrumentation),
+        process_runner=runner,
+    )
+
+    backend.start(
+        "target.bin",
+        [],
+        None,
+        {
+            "launch": True,
+            "qemu_user_path": "/usr/bin/qemu-x86_64",
+            "instrumentation_socket_path": "/tmp/events.sock",
+            "instrumentation_rpc_socket_path": "/tmp/rpc.sock",
+        },
+    )
+
+    trace_file = runner.config.instrumentation_trace_file
+    assert isinstance(trace_file, str) and trace_file.endswith("/trace.ndjson")
+    assert Path(trace_file).parent.exists()
+
+    backend.close()
+    assert not Path(trace_file).parent.exists()
+
+
+def test_backend_start_cleans_up_partial_launch_on_socket_timeout(monkeypatch) -> None:  # noqa: ANN001
+    runner = FakeProcessRunner()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=None,
+        process_runner=runner,
+    )
+
+    def _raise_timeout(socket_path: str, timeout: float) -> None:
+        del socket_path, timeout
+        raise SessionTimeoutError("timed out waiting for socket")
+
+    monkeypatch.setattr(
+        QemuUserInstrumentedBackend,
+        "_wait_for_socket_path",
+        staticmethod(_raise_timeout),
+    )
+
+    with pytest.raises(SessionTimeoutError):
+        backend.start(
+            "target.bin",
+            [],
+            None,
+            {
+                "launch": True,
+                "qemu_user_path": "/usr/bin/qemu-x86_64",
+            },
+        )
+
+    assert runner.started is True
+    assert runner.closed is True
+    state = backend.get_state()
+    assert state["session_status"] == "closed"
+    assert state["instrumentation_rpc_socket_path"] is None
+    assert backend._instrumentation is None
+    assert backend._instrumentation_rpc is None
+
+
+def test_backend_start_fails_when_event_socket_missing(monkeypatch) -> None:  # noqa: ANN001
+    runner = FakeProcessRunner()
+    instrumentation = FakeInstrumentationClient()
+    rpc = FakeInstrumentationRpcClient(instrumentation)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=rpc,
+        process_runner=runner,
+    )
+
+    def _wait_selective(socket_path: str, timeout: float) -> None:
+        del timeout
+        if socket_path.endswith("events.sock"):
+            raise SessionTimeoutError("timed out waiting for socket: events")
+        return None
+
+    monkeypatch.setattr(
+        QemuUserInstrumentedBackend,
+        "_wait_for_socket_path",
+        staticmethod(_wait_selective),
+    )
+    monkeypatch.setattr(instrumentation, "socket_path", "/tmp/ia/events.sock", raising=False)
+    monkeypatch.setattr(rpc, "socket_path", "/tmp/ia/rpc.sock", raising=False)
+
+    with pytest.raises(SessionTimeoutError):
+        backend.start(
+            "target.bin",
+            [],
+            None,
+            {
+                "launch": True,
+                "qemu_user_path": "/usr/bin/qemu-x86_64",
+                "instrumentation_socket_path": "/tmp/ia/events.sock",
+                "instrumentation_rpc_socket_path": "/tmp/ia/rpc.sock",
+            },
+        )
+
+    state = backend.get_state()
+    assert state["session_status"] == "closed"
+    assert runner.closed is True
+
+
+def test_backend_trace_file_mode_reads_events(tmp_path: Path) -> None:
+    trace_file = tmp_path / "trace.ndjson"
+    trace_file.write_text(
+        "\n".join(
+            [
+                '{"event_id":"e-1","seq":1,"type":"branch","timestamp":1.0,"pc":"0x401000","thread_id":"1","cpu_id":0,"payload":{"target":"0x401010","taken":true}}',
+                '{"event_id":"e-2","seq":2,"type":"basic_block","timestamp":1.1,"pc":"0x401010","thread_id":"1","cpu_id":0,"payload":{"start":"0x401010","end":"0x401012","instruction_count":1}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(None),
+        process_runner=None,
+    )
+
+    backend.start(
+        "target.bin",
+        [],
+        None,
+        {
+            "instrumentation_rpc_socket_path": "/tmp/rpc.sock",
+            "instrumentation_trace_file_path": str(trace_file),
+        },
+    )
+    backend.configure_event_filters(event_types=["branch"], address_ranges=None)
+    trace = backend.get_trace(limit=10)
+    events = backend.get_recent_events(limit=10, event_types=["branch"])
+
+    assert trace["result"]["trace"] == [
+        {"index": 0, "event_id": "e-1", "type": "branch", "pc": "0x401000", "thread_id": "1"},
+        {"index": 1, "event_id": "e-2", "type": "basic_block", "pc": "0x401010", "thread_id": "1"},
+    ]
+    assert len(events["result"]["events"]) == 1
+    assert events["result"]["events"][0]["event_id"] == "e-1"
+    assert events["state"]["ingestion_stats"]["source"] == "trace_file"
 
 
 def test_backend_get_state_reports_process_exit_code() -> None:

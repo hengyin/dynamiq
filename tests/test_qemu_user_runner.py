@@ -16,6 +16,7 @@ def test_qemu_user_launch_config_builds_command_and_env() -> None:
             "qemu_args": ["-strace"],
             "instrumentation_socket_path": "/tmp/events.sock",
             "instrumentation_rpc_socket_path": "/tmp/rpc.sock",
+            "instrumentation_trace_file_path": "/tmp/trace.ndjson",
             "env": {"FOO": "bar"},
         },
     )
@@ -25,6 +26,7 @@ def test_qemu_user_launch_config_builds_command_and_env() -> None:
     assert env["FOO"] == "bar"
     assert env["IA_EVENT_SOCKET"] == "/tmp/events.sock"
     assert env["IA_RPC_SOCKET"] == "/tmp/rpc.sock"
+    assert env["IA_TRACE_FILE"] == "/tmp/trace.ndjson"
 
 
 def test_qemu_user_launch_config_prefers_local_build_when_available(monkeypatch, tmp_path: Path) -> None:

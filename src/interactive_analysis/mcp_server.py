@@ -228,6 +228,28 @@ class InteractiveAnalysisMcpServer:
                         timeout=timeout,
                     )
                 )
+            if name == "trace_start":
+                event_types = self._parse_optional_string_list(arguments, "event_types", default=None)
+                address_ranges = self._parse_optional_address_ranges(arguments, "address_ranges")
+                return self._tool_ok(
+                    self._ensure_session().trace_start(
+                        event_types=event_types,
+                        address_ranges=address_ranges,
+                    )
+                )
+            if name == "trace_stop":
+                return self._tool_ok(self._ensure_session().trace_stop())
+            if name == "trace_status":
+                return self._tool_ok(self._ensure_session().trace_status())
+            if name == "trace_get":
+                limit = self._parse_int(arguments, "limit", default=100, minimum=1)
+                since_start = self._parse_bool(arguments, "since_start", default=True)
+                return self._tool_ok(
+                    self._ensure_session().trace_get(
+                        limit=limit,
+                        since_start=since_start,
+                    )
+                )
             if name == "bp_add":
                 address = self._parse_nonempty_string(arguments, "address")
                 return self._tool_ok(self._ensure_session().bp_add(address=address))
@@ -434,6 +456,26 @@ class InteractiveAnalysisMcpServer:
         if not isinstance(value, bool):
             raise ValueError(f"{key} must be a boolean")
         return value
+
+    @staticmethod
+    def _parse_optional_address_ranges(arguments: JSON, key: str) -> list[tuple[str, str]] | None:
+        if key not in arguments or arguments.get(key) is None:
+            return None
+        raw = arguments.get(key)
+        if not isinstance(raw, list):
+            raise ValueError(f"{key} must be an array")
+        parsed: list[tuple[str, str]] = []
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                raise ValueError(f"{key}[{index}] must be an object with start/end")
+            start = item.get("start")
+            end = item.get("end")
+            if not isinstance(start, str) or start.strip() == "":
+                raise ValueError(f"{key}[{index}].start must be a non-empty string")
+            if not isinstance(end, str) or end.strip() == "":
+                raise ValueError(f"{key}[{index}].end must be a non-empty string")
+            parsed.append((start.strip(), end.strip()))
+        return parsed
 
     @staticmethod
     def _looks_like_path_token(value: str) -> bool:
@@ -807,6 +849,59 @@ class InteractiveAnalysisMcpServer:
                             ),
                             "default": 5.0,
                         },
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="trace_start",
+                description=(
+                    "Start trace tracing for this session with optional filters and a start marker. "
+                    "Use trace_get to retrieve trace entries."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "event_types": {
+                            "type": "array",
+                            "description": "Optional event type filters.",
+                            "items": {"type": "string"},
+                        },
+                        "address_ranges": {
+                            "type": "array",
+                            "description": "Optional address range filters.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "start": {"type": "string"},
+                                    "end": {"type": "string"},
+                                },
+                                "required": ["start", "end"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="trace_stop",
+                description="Stop trace tracing marker for this session.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            ToolSpec(
+                name="trace_status",
+                description="Show trace tracing status, filters, and marker heads.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            ToolSpec(
+                name="trace_get",
+                description="Fetch trace entries (defaults to entries since trace_start).",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "default": 100},
+                        "since_start": {"type": "boolean", "default": True},
                     },
                     "additionalProperties": False,
                 },

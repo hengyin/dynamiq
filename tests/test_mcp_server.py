@@ -117,6 +117,37 @@ class FakeSession:
             "result": {"matched_address": "0x401000", "selected_address": "0x401000", "steps": 0, "timeout": timeout},
         }
 
+    def trace_start(self, event_types=None, address_ranges=None):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "trace_start",
+            "result": {
+                "filters": {
+                    "event_types": list(event_types or []),
+                    "address_ranges": list(address_ranges or []),
+                },
+                "trace_active": True,
+                "trace_start_head": 0,
+            },
+        }
+
+    def trace_stop(self):
+        return {"ok": True, "command": "trace_stop", "result": {"trace_active": False, "trace_start_head": 0}}
+
+    def trace_status(self):
+        return {
+            "ok": True,
+            "command": "trace_status",
+            "result": {"trace_active": True, "trace_event_types": ["branch"], "trace_address_ranges": [], "trace_start_head": 0, "trace_head": 3},
+        }
+
+    def trace_get(self, limit=100, since_start=True):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "trace_get",
+            "result": {"trace": [{"index": 0, "event_id": "e-1", "type": "branch"}], "limit": limit, "since_start": since_start},
+        }
+
 def _server() -> InteractiveAnalysisMcpServer:
     return InteractiveAnalysisMcpServer(session_factory=FakeSession)
 
@@ -143,6 +174,10 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "send_line" in names
     assert "stdout" in names
     assert "bp_add" in names
+    assert "trace_start" in names
+    assert "trace_stop" in names
+    assert "trace_status" in names
+    assert "trace_get" in names
     assert "bt" in names
     assert "bp_list" in names
     assert "stdin" not in names
@@ -550,6 +585,82 @@ def test_mcp_tool_call_run_timeout_is_non_fatal() -> None:
     assert payload["command"] == "run"
     assert payload["result"]["timed_out"] is True
     assert payload["result"]["timeout"] == 2.0
+
+
+def test_mcp_tool_call_trace_start_with_filters() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 610,
+            "method": "tools/call",
+            "params": {
+                "name": "trace_start",
+                "arguments": {
+                    "event_types": ["branch", "basic_block"],
+                    "address_ranges": [{"start": "0x401000", "end": "0x401100"}],
+                },
+            },
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    payload = response["result"]["structuredContent"]
+    assert payload["command"] == "trace_start"
+    assert payload["result"]["filters"]["event_types"] == ["branch", "basic_block"]
+    assert payload["result"]["filters"]["address_ranges"] == [("0x401000", "0x401100")]
+
+
+def test_mcp_tool_call_trace_status_and_get() -> None:
+    server = _server()
+    status_response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 611,
+            "method": "tools/call",
+            "params": {"name": "trace_status", "arguments": {}},
+        }
+    )
+    get_response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 612,
+            "method": "tools/call",
+            "params": {"name": "trace_get", "arguments": {"limit": 20, "since_start": False}},
+        }
+    )
+    stop_response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 613,
+            "method": "tools/call",
+            "params": {"name": "trace_stop", "arguments": {}},
+        }
+    )
+    assert status_response is not None and get_response is not None and stop_response is not None
+    assert status_response["result"]["structuredContent"]["command"] == "trace_status"
+    assert get_response["result"]["structuredContent"]["command"] == "trace_get"
+    assert get_response["result"]["structuredContent"]["result"]["since_start"] is False
+    assert stop_response["result"]["structuredContent"]["command"] == "trace_stop"
+
+
+def test_mcp_trace_start_rejects_malformed_address_ranges() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 614,
+            "method": "tools/call",
+            "params": {
+                "name": "trace_start",
+                "arguments": {"address_ranges": [{"start": "0x401000"}]},
+            },
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is True
+    text = response["result"]["content"][0]["text"]
+    assert "address_ranges[0].end must be a non-empty string" in text
 
 
 def test_mcp_tool_call_pause_timeout_is_non_fatal() -> None:

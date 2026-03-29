@@ -106,9 +106,8 @@ fi
 run mkdir -p "${BUILD_DIR}"
 run mkdir -p "${OUT_DIR}"
 
-if [[ ! -f "${BUILD_DIR}/build.ninja" ]]; then
-  run bash -lc "cd \"${BUILD_DIR}\" && \"${QEMU_SRC}/configure\" --target-list=\"${TARGET_LIST}\" --disable-werror"
-fi
+# Always re-run configure so existing build dirs get updated target lists.
+run bash -lc "cd \"${BUILD_DIR}\" && \"${QEMU_SRC}/configure\" --target-list=\"${TARGET_LIST}\" --disable-werror"
 
 run make -C "${BUILD_DIR}" -j"${JOBS}" qemu-i386 qemu-x86_64
 run cp -f "${BUILD_DIR}/qemu-i386" "${OUT_DIR}/qemu-i386-instrumented"

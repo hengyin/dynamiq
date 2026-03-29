@@ -141,6 +141,7 @@ PYTHONPATH=src .venv/bin/python -m interactive_analysis.mcp_server
 - `run`, `pause`
 - `send_bytes`, `send_line`, `send_file`, `stdout`, `stderr`
 - `regs`, `bt`, `disasm`, `mem`, `maps`, `syms`
+- `trace_start`, `trace_stop`, `trace_status`, `trace_get`
 - `step`, `bb`
 - `bp_add`, `bp_del`, `bp_list`, `bp_clear`
 
@@ -214,9 +215,27 @@ Example `tools/call` arguments:
 }
 ```
 
+- `trace_start` (optional filters)
+```json
+{
+  "event_types": ["branch", "basic_block"],
+  "address_ranges": [{"start":"0x401000","end":"0x401200"}]
+}
+```
+
+- `trace_get`
+```json
+{
+  "limit": 100,
+  "since_start": true
+}
+```
+
 `stdout` and `stderr` return `data`, `cursor`, and `eof`. The server tracks cursors internally, so repeated calls return only new output by default.
 
 `bt` returns a gdb-like backtrace using current registers plus frame-pointer unwinding. It is best-effort and may be shallow if frame pointers are omitted or stack metadata is unavailable.
+
+Tracing can also be persisted to a file and consumed later by setting `qemu_config.instrumentation_trace_file_path` (exported to the target runtime as `IA_TRACE_FILE`). This mode keeps `trace_start`/`trace_get` usable even when live event streaming is unavailable.
 
 ### MCP troubleshooting
 
@@ -226,6 +245,8 @@ Example `tools/call` arguments:
   This is often expected for interactive flows (waiting for input or breakpoint condition). Treat as non-fatal and immediately check `stdout`, `stderr`, and `state`.
 - Session is `idle` and target is not running:
   Use `start` (defaults to launch mode), then `run`.
+- Live event socket startup is flaky:
+  Set `qemu_config.instrumentation_trace_file_path` and rely on `trace_get` for file-backed trace retrieval.
 - Large multiline payloads fail in tool UI:
   Use `send_file` (preferred) or split into multiple `send_bytes` calls.
 

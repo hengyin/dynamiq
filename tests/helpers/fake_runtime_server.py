@@ -56,6 +56,21 @@ def rpc_main() -> int:
                 "executed": params["count"],
                 "pc": "0x401004",
             }
+        elif method == "resume_until_address":
+            result = {
+                "status": "paused",
+                "pc": params["address"],
+                "matched": True,
+                "matched_pc": params["address"],
+            }
+        elif method == "resume_until_any_address":
+            matched = params["addresses"][0]
+            result = {
+                "status": "paused",
+                "pc": matched,
+                "matched": True,
+                "matched_pc": matched,
+            }
         elif method == "pause":
             result = {}
         elif method == "query_status":

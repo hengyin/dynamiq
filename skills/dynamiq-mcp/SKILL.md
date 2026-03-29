@@ -48,7 +48,12 @@ Use this skill when a task requires driving the `dynamiq` MCP tools for interact
 7. `send_line` / `send_bytes` / `send_file` as needed.
 8. Repeat `run` -> `stdout` -> `stderr` -> `state`.
 9. Use `regs`, `bt`, `disasm`, `mem`, `maps`, `step`, `bb` for inspection.
+10. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
 10. `close` at end.
+
+Trace file mode:
+- If live event streaming is unstable, set `start.qemu_config.instrumentation_trace_file_path` and use file-backed tracing via the same `trace_*` tools.
+- The runtime receives this path as `IA_TRACE_FILE`.
 
 ## Tool Choice Guide
 
@@ -63,6 +68,8 @@ Use this skill when a task requires driving the `dynamiq` MCP tools for interact
 - `send_file`: stream bytes from local file to stdin.
 - `regs` / `bt` / `disasm` / `mem` / `maps`: low-level state inspection.
 - `bt`: best-effort stack backtrace; use after breakpoints to quickly map call chains.
+- `trace_start` / `trace_stop` / `trace_status` / `trace_get`: trace tracing workflow and retrieval.
+- `qemu_config.instrumentation_trace_file_path`: optional trace spool file for deferred/offline trace retrieval.
 - `state`: verify lifecycle (`idle`, `paused`, `running`, `exited`).
 - `close`: terminate active session and reset stream cursors.
 
