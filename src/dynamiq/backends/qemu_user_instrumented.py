@@ -230,6 +230,8 @@ class QemuUserInstrumentedBackend:
 
     def pause(self, timeout: float) -> dict[str, Any]:
         self._require_started()
+        if not self._capabilities.pause_resume:
+            raise UnsupportedOperationError("backend does not support pause/resume control")
         before_status = self._state.get("session_status")
         before_pc = self._state.get("pc")
         if self._instrumentation_rpc is not None:

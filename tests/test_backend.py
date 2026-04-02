@@ -546,6 +546,23 @@ def test_backend_resume_uses_rpc_control_when_available() -> None:
     assert rpc.requests[0] == ("resume", {})
 
 
+def test_backend_pause_uses_rpc_control_when_available() -> None:
+    instrumentation = FakeInstrumentationClient()
+    rpc = FakeInstrumentationRpcClient(instrumentation)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+    backend.resume(timeout=1.0)
+
+    result = backend.pause(timeout=1.0)
+
+    assert result["state"]["session_status"] == "paused"
+    assert ("pause", {}) in rpc.requests
+
+
 def test_backend_start_can_launch_qemu_user_process() -> None:
     runner = FakeProcessRunner()
     instrumentation = FakeInstrumentationClient()

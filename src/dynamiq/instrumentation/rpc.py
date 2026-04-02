@@ -89,8 +89,23 @@ class InstrumentationRpcClient:
             message = self._read_message()
             if message.get("id") != request_id:
                 continue
+            ok = message.get("ok")
+            if ok is False:
+                error = message.get("error")
+                if isinstance(error, dict):
+                    code = error.get("code")
+                    detail = error.get("message")
+                    if isinstance(code, str) and isinstance(detail, str):
+                        raise InstrumentationRpcError(f"{code}: {detail}")
+                raise InstrumentationRpcError(str(error))
             if "error" in message:
-                raise InstrumentationRpcError(str(message["error"]))
+                error = message["error"]
+                if isinstance(error, dict):
+                    code = error.get("code")
+                    detail = error.get("message")
+                    if isinstance(code, str) and isinstance(detail, str):
+                        raise InstrumentationRpcError(f"{code}: {detail}")
+                raise InstrumentationRpcError(str(error))
             result = message.get("result")
             if not isinstance(result, dict):
                 raise InstrumentationRpcError("instrumentation RPC result must be an object")

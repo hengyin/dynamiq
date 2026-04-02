@@ -77,3 +77,27 @@ def test_instrumentation_rpc_client_request_overrides_timeout(monkeypatch) -> No
     client.close()
 
     assert fake_socket.timeout == 7.5
+
+
+def test_instrumentation_rpc_client_accepts_ok_envelope(monkeypatch) -> None:
+    fake_socket = FakeSocket(['{"id":1,"ok":true,"result":{"status":"paused"}}\n'])
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: fake_socket)
+
+    client = InstrumentationRpcClient("/tmp/instrument.sock")
+    client.connect()
+    result = client.request("query_status")
+    client.close()
+
+    assert result == {"status": "paused"}
+
+
+def test_instrumentation_rpc_client_raises_on_ok_false(monkeypatch) -> None:
+    fake_socket = FakeSocket(
+        ['{"id":1,"ok":false,"error":{"code":"unknown_method","message":"unknown instrumentation RPC method"}}\n']
+    )
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: fake_socket)
+
+    client = InstrumentationRpcClient("/tmp/instrument.sock")
+    client.connect()
+    with pytest.raises(InstrumentationRpcError, match="unknown_method"):
+        client.request("pause")
