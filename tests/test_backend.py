@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
-from dynamiq.errors import InvalidStateError, SessionTimeoutError
+from dynamiq.errors import InvalidStateError, SessionTimeoutError, UnsupportedOperationError
 
 
 class FakeQmpClient:
@@ -120,6 +120,8 @@ class FakeInstrumentationRpcClient:
         self.requests: list[tuple[str, dict]] = []
         self.request_timeouts: list[tuple[str, float | None]] = []
         self.instrumentation_client = instrumentation_client
+        self.trace_active = False
+        self.trace_file: str | None = None
 
     def connect(self) -> None:
         self.connected = True
@@ -127,7 +129,7 @@ class FakeInstrumentationRpcClient:
     def request(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
         params = dict(params or {})
         self.request_timeouts.append((method, timeout))
-        if method != "capabilities":
+        if method not in {"capabilities", "query_status"}:
             self.requests.append((method, params))
         if method == "capabilities":
             return {
@@ -140,7 +142,7 @@ class FakeInstrumentationRpcClient:
                     "list_memory_maps": True,
                     "take_snapshot": False,
                     "restore_snapshot": False,
-                    "trace_basic_block": False,
+                    "trace_basic_block": True,
                     "trace_branch": False,
                     "trace_memory": False,
                     "trace_syscall": False,
@@ -164,7 +166,12 @@ class FakeInstrumentationRpcClient:
         if method == "single_step":
             return {"status": "paused", "count": params["count"], "executed": params["count"], "pc": "0x401004"}
         if method == "query_status":
-            return {"status": "paused"}
+            result = {"status": "paused", "trace_active": self.trace_active}
+            if self.trace_file:
+                result["trace_file"] = self.trace_file
+            if self.trace_active:
+                result["trace_kind"] = "basic_block"
+            return result
         if method == "get_registers":
             return {"registers": {"rax": "0x1", "rbx": "0x2", "rip": "0x401000"}}
         if method == "read_memory":
@@ -188,6 +195,14 @@ class FakeInstrumentationRpcClient:
             }
         if method == "list_memory_maps":
             return {"regions": [{"start": "0x400000", "end": "0x401000", "perm": "r-x"}]}
+        if method == "start_trace":
+            if not self.trace_file:
+                self.trace_file = "/tmp/fake-trace.ndjson"
+            self.trace_active = True
+            return {"trace_active": True, "trace_kind": "basic_block", "trace_file": self.trace_file}
+        if method == "stop_trace":
+            self.trace_active = False
+            return {"trace_active": False, "trace_file": self.trace_file}
         raise AssertionError(f"unexpected method: {method}")
 
     def close(self) -> None:
@@ -284,6 +299,20 @@ def test_backend_start_allows_rpc_only_mode() -> None:
     assert state["rpc_protocol_version"] == 1
     assert state["rpc_capabilities"]["read_memory"] is True
     assert registers["result"]["registers"]["rip"] == "0x401000"
+
+
+def test_backend_start_syncs_initial_rpc_status() -> None:
+    rpc = FakeInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+
+    backend.start("target.bin", [], None, {})
+
+    state = backend.get_state()
+    assert state["session_status"] == "paused"
 
 
 def test_backend_start_clears_stale_exit_and_pc_state() -> None:
@@ -498,22 +527,65 @@ def test_backend_take_snapshot_records_snapshot_id() -> None:
         backend.take_snapshot("snap-1")
 
 
-def test_backend_configure_filters_returns_ranges() -> None:
-    instrumentation = FakeInstrumentationClient()
+def test_backend_trace_start_uses_rpc_method() -> None:
     backend = QemuUserInstrumentedBackend(
-        qmp_client=FakeQmpClient(),
-        instrumentation_client=instrumentation,
-        instrumentation_rpc_client=FakeInstrumentationRpcClient(instrumentation),
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(None),
     )
     backend.start("target.bin", [], None, {})
 
-    result = backend.configure_event_filters(
-        event_types=["branch"],
-        address_ranges=[("0x401000", "0x401100")],
-    )
+    result = backend.trace_start(event_types=["basic_block"], address_ranges=None)
 
-    assert result["result"]["filters"]["event_types"] == ["branch"]
-    assert result["result"]["filters"]["address_ranges"] == [("0x401000", "0x401100")]
+    assert result["result"]["filters"]["event_types"] == ["basic_block"]
+    assert result["result"]["trace_active"] is True
+    assert result["result"]["trace_kind"] == "basic_block"
+    assert result["result"]["trace_file"] == "/tmp/fake-trace.ndjson"
+
+
+def test_backend_trace_status_uses_rpc_query_status() -> None:
+    rpc = FakeInstrumentationRpcClient(None)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+    backend.trace_start(event_types=["basic_block"], address_ranges=None)
+
+    result = backend.trace_status()
+
+    assert result["result"]["trace_active"] is True
+    assert result["result"]["trace_kind"] == "basic_block"
+    assert result["result"]["trace_file"] == "/tmp/fake-trace.ndjson"
+
+
+def test_backend_trace_stop_uses_rpc_method() -> None:
+    rpc = FakeInstrumentationRpcClient(None)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+    backend.trace_start(event_types=["basic_block"], address_ranges=None)
+
+    result = backend.trace_stop()
+
+    assert result["result"]["trace_active"] is False
+    assert result["result"]["trace_file"] == "/tmp/fake-trace.ndjson"
+
+
+def test_backend_trace_start_rejects_unsupported_filters() -> None:
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(None),
+    )
+    backend.start("target.bin", [], None, {})
+
+    with pytest.raises(UnsupportedOperationError, match="unsupported trace event types"):
+        backend.trace_start(event_types=["branch"], address_ranges=None)
 
 
 def test_backend_get_state_queries_qmp_status() -> None:
@@ -622,7 +694,7 @@ def test_backend_start_launch_auto_configures_rpc_socket_path() -> None:
     assert not Path(rpc_socket).parent.exists()
 
 
-def test_backend_start_launch_auto_configures_rpc_and_trace_paths() -> None:
+def test_backend_start_launch_auto_configures_rpc_path_only() -> None:
     runner = FakeProcessRunner()
     instrumentation = FakeInstrumentationClient()
     backend = QemuUserInstrumentedBackend(
@@ -643,44 +715,12 @@ def test_backend_start_launch_auto_configures_rpc_and_trace_paths() -> None:
     )
 
     rpc_socket = runner.config.instrumentation_rpc_socket
-    trace_file = runner.config.instrumentation_trace_file
     assert isinstance(rpc_socket, str) and rpc_socket.endswith("/rpc.sock")
-    assert isinstance(trace_file, str) and trace_file.endswith("/trace.ndjson")
     assert Path(rpc_socket).parent.exists()
-    assert Path(trace_file).parent.exists()
+    assert runner.config.instrumentation_trace_file is None
 
     backend.close()
-    assert not Path(trace_file).parent.exists()
-
-
-def test_backend_start_launch_auto_configures_trace_file_path() -> None:
-    runner = FakeProcessRunner()
-    instrumentation = FakeInstrumentationClient()
-    backend = QemuUserInstrumentedBackend(
-        qmp_client=None,
-        instrumentation_client=instrumentation,
-        instrumentation_rpc_client=FakeInstrumentationRpcClient(instrumentation),
-        process_runner=runner,
-    )
-
-    backend.start(
-        "target.bin",
-        [],
-        None,
-        {
-            "launch": True,
-            "qemu_user_path": "/usr/bin/qemu-x86_64",
-            "instrumentation_socket_path": "/tmp/events.sock",
-            "instrumentation_rpc_socket_path": "/tmp/rpc.sock",
-        },
-    )
-
-    trace_file = runner.config.instrumentation_trace_file
-    assert isinstance(trace_file, str) and trace_file.endswith("/trace.ndjson")
-    assert Path(trace_file).parent.exists()
-
-    backend.close()
-    assert not Path(trace_file).parent.exists()
+    assert not Path(rpc_socket).parent.exists()
 
 
 def test_backend_start_cleans_up_partial_launch_on_socket_timeout(monkeypatch) -> None:  # noqa: ANN001

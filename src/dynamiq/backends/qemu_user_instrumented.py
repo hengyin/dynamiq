@@ -47,6 +47,9 @@ class QemuUserInstrumentedBackend:
             "launched_qemu_user_path": None,
             "rpc_protocol_version": None,
             "rpc_capabilities": {},
+            "trace_active": False,
+            "trace_kind": None,
+            "trace_file": None,
             "last_rpc_method": None,
             "last_rpc_timeout": None,
             "last_rpc_params": {},
@@ -133,11 +136,11 @@ class QemuUserInstrumentedBackend:
             self._trace_file_offset = 0
             self._trace_raw_recent.clear()
             if self._instrumentation is None:
-                trace_available = self._trace_file_path is not None
+                trace_available = self._trace_file_path is not None or self._instrumentation_rpc is not None
                 self._capabilities.trace_basic_block = trace_available
-                self._capabilities.trace_branch = trace_available
-                self._capabilities.trace_memory = trace_available
-                self._capabilities.trace_syscall = trace_available
+                self._capabilities.trace_branch = False
+                self._capabilities.trace_memory = False
+                self._capabilities.trace_syscall = False
                 if self._instrumentation_rpc is None:
                     self._capabilities.run_until_address = False
                     self._capabilities.single_step = False
@@ -175,6 +178,9 @@ class QemuUserInstrumentedBackend:
                 rpc_caps = self._rpc_request("capabilities")
                 self._validate_rpc_capabilities(rpc_caps)
                 self._apply_rpc_capabilities(rpc_caps)
+                initial_status = self._rpc_request("query_status")
+            else:
+                initial_status = {}
             if overrides:
                 for key, value in overrides.items():
                     if hasattr(self._capabilities, key):
@@ -200,11 +206,16 @@ class QemuUserInstrumentedBackend:
                     "instrumentation_rpc_socket_path": qemu_config.get("instrumentation_rpc_socket_path"),
                     "rpc_protocol_version": self._RPC_PROTOCOL_VERSION if self._instrumentation_rpc is not None else None,
                     "rpc_capabilities": dict(rpc_caps.get("capabilities", {})) if self._instrumentation_rpc is not None else {},
+                    "trace_active": bool(initial_status.get("trace_active", False)),
+                    "trace_kind": initial_status.get("trace_kind") if isinstance(initial_status.get("trace_kind"), str) else None,
+                    "trace_file": initial_status.get("trace_file") if isinstance(initial_status.get("trace_file"), str) else (str(self._trace_file_path) if self._trace_file_path is not None else None),
                     "recent_events": [],
                     "ingestion_stats": self._instrumentation.stats.to_dict() if self._instrumentation is not None else {},
                     "capabilities": self._capabilities.to_dict(),
                 }
             )
+            if isinstance(initial_status.get("status"), str):
+                self._state["session_status"] = initial_status["status"]
             self._refresh_trace_from_file()
             self._started = True
         except Exception:
@@ -455,6 +466,63 @@ class QemuUserInstrumentedBackend:
         trace = list(self._trace)[-limit:]
         return self._response({"trace": trace})
 
+    def trace_start(
+        self,
+        event_types: list[str] | None = None,
+        address_ranges: list[tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        self._require_started()
+        normalized_types = [str(item).strip() for item in (event_types or []) if str(item).strip()]
+        if address_ranges:
+            raise UnsupportedOperationError("trace address range filters are not supported by the SymFit RPC backend")
+        unsupported = [item for item in normalized_types if item != "basic_block"]
+        if unsupported:
+            raise UnsupportedOperationError(
+                f"unsupported trace event types for SymFit RPC backend: {', '.join(sorted(set(unsupported)))}"
+            )
+        if self._instrumentation is None and self._instrumentation_rpc is not None:
+            result = self._rpc_request("start_trace", {"basic_block": True})
+            self._apply_trace_status(result)
+            filters = {"event_types": ["basic_block"], "address_ranges": []}
+            return self._response({"filters": filters, **result})
+        return self.configure_event_filters(event_types=event_types, address_ranges=address_ranges)
+
+    def trace_stop(self) -> dict[str, Any]:
+        self._require_started()
+        if self._instrumentation is None and self._instrumentation_rpc is not None:
+            result = self._rpc_request("stop_trace")
+            self._apply_trace_status(result)
+            return self._response(result)
+        self._state["trace_active"] = False
+        self._state["trace_kind"] = None
+        return self._response(
+            {
+                "trace_active": False,
+                "trace_kind": None,
+                "trace_file": str(self._trace_file_path) if self._trace_file_path is not None else None,
+            }
+        )
+
+    def trace_status(self) -> dict[str, Any]:
+        self._require_started()
+        if self._instrumentation is None and self._instrumentation_rpc is not None:
+            result = self._rpc_request("query_status")
+            self._apply_trace_status(result)
+            return self._response(
+                {
+                    "trace_active": bool(self._state.get("trace_active")),
+                    "trace_kind": self._state.get("trace_kind"),
+                    "trace_file": self._state.get("trace_file"),
+                }
+            )
+        return self._response(
+            {
+                "trace_active": bool(self._state.get("trace_active")),
+                "trace_kind": self._state.get("trace_kind"),
+                "trace_file": str(self._trace_file_path) if self._trace_file_path is not None else None,
+            }
+        )
+
     def configure_event_filters(
         self,
         event_types: list[str] | None = None,
@@ -476,14 +544,15 @@ class QemuUserInstrumentedBackend:
 
     def get_state(self) -> dict[str, Any]:
         self._sync_process_state()
-        if self._process_runner is None and self._instrumentation_rpc is not None and self._started:
+        if self._state.get("session_status") != "exited" and self._instrumentation_rpc is not None and self._started:
             try:
                 status = self._instrumentation_rpc.request("query_status")
             except Exception:
                 status = None
             if status and "status" in status:
                 self._state["session_status"] = status["status"]
-        elif self._process_runner is None and self._controller is not None and self._started:
+                self._apply_trace_status(status)
+        elif self._state.get("session_status") != "exited" and self._controller is not None and self._started:
             try:
                 status = self._controller.query_status()
             except Exception:
@@ -546,6 +615,9 @@ class QemuUserInstrumentedBackend:
         self._trace_filter_ranges = []
         self._trace.clear()
         self._trace_event_ids.clear()
+        self._state["trace_active"] = False
+        self._state["trace_kind"] = None
+        self._state["trace_file"] = None
 
     def _response(self, result: dict[str, Any]) -> dict[str, Any]:
         self._sync_process_state()
@@ -639,6 +711,7 @@ class QemuUserInstrumentedBackend:
         self._state["last_rpc_error"] = None
         try:
             result = rpc.request(method, params, timeout=timeout)
+            self._apply_trace_status(result)
             history_entry["ok"] = True
             status = result.get("status")
             if isinstance(status, str):
@@ -710,10 +783,30 @@ class QemuUserInstrumentedBackend:
             self._state["stop_reason"] = "exited"
         self._record_stop_transition("process_exit", before_status, before_pc)
 
+    def _apply_trace_status(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        if "trace_active" in payload:
+            self._state["trace_active"] = bool(payload.get("trace_active"))
+        if "trace_kind" in payload:
+            trace_kind = payload.get("trace_kind")
+            self._state["trace_kind"] = trace_kind if isinstance(trace_kind, str) else None
+        elif payload.get("trace_active") is False:
+            self._state["trace_kind"] = None
+        if "trace_file" in payload:
+            trace_file = payload.get("trace_file")
+            if isinstance(trace_file, str) and trace_file:
+                self._state["trace_file"] = trace_file
+                self._trace_file_path = Path(trace_file)
+            else:
+                self._state["trace_file"] = None
+                self._trace_file_path = None
+                self._trace_file_offset = 0
+
     def _ensure_launch_sockets(self, qemu_config: dict[str, Any]) -> dict[str, Any]:
         need_event = False
         need_rpc = not bool(qemu_config.get("instrumentation_rpc_socket_path"))
-        need_trace_file = not bool(qemu_config.get("instrumentation_trace_file_path"))
+        need_trace_file = False
         if not need_event and not need_rpc and not need_trace_file:
             return qemu_config
 
@@ -736,8 +829,6 @@ class QemuUserInstrumentedBackend:
             qemu_config["instrumentation_socket_path"] = str(root / "events.sock")
         if need_rpc:
             qemu_config["instrumentation_rpc_socket_path"] = str(root / "rpc.sock")
-        if need_trace_file:
-            qemu_config["instrumentation_trace_file_path"] = str(root / "trace.ndjson")
         return qemu_config
 
     def _append_rpc_history(self, entry: dict[str, Any]) -> None:

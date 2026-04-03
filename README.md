@@ -215,11 +215,10 @@ Example `tools/call` arguments:
 }
 ```
 
-- `trace_start` (optional filters)
+- `trace_start` (SymFit RPC backend)
 ```json
 {
-  "event_types": ["branch", "basic_block"],
-  "address_ranges": [{"start":"0x401000","end":"0x401200"}]
+  "event_types": ["basic_block"]
 }
 ```
 
@@ -235,7 +234,9 @@ Example `tools/call` arguments:
 
 `bt` returns a gdb-like backtrace using current registers plus frame-pointer unwinding. It is best-effort and may be shallow if frame pointers are omitted or stack metadata is unavailable.
 
-Tracing can also be persisted to a file and consumed later by setting `qemu_config.instrumentation_trace_file_path` (exported to the target runtime as `IA_TRACE_FILE`). This mode keeps `trace_start`/`trace_get` usable even when live event streaming is unavailable.
+With the SymFit backend, tracing is started over RPC. The backend creates and
+returns the trace artifact path, and `trace_get` consumes that artifact through
+the backend adapter.
 
 ### MCP troubleshooting
 
@@ -245,8 +246,9 @@ Tracing can also be persisted to a file and consumed later by setting `qemu_conf
   This is often expected for interactive flows (waiting for input or breakpoint condition). Treat as non-fatal and immediately check `stdout`, `stderr`, and `state`.
 - Session is `idle` and target is not running:
   Use `start` (defaults to launch mode), then `run`.
-- Live event socket startup is flaky:
-  Set `qemu_config.instrumentation_trace_file_path` and rely on `trace_get` for file-backed trace retrieval.
+- Trace start rejects unsupported filters:
+  The SymFit RPC backend currently supports only `event_types=["basic_block"]`
+  and does not support address-range filtering.
 - Large multiline payloads fail in tool UI:
   Use `send_file` (preferred) or split into multiple `send_bytes` calls.
 

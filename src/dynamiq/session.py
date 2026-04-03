@@ -47,6 +47,8 @@ class AnalysisSession:
         self.state.args = call_args
         self.state.cwd = cwd
         self.state.trace_active = False
+        self.state.trace_kind = None
+        self.state.trace_file = None
         self.state.trace_event_types = []
         self.state.trace_address_ranges = []
         self.state.trace_start_head = 0
@@ -341,14 +343,26 @@ class AnalysisSession:
         event_types: list[str] | None = None,
         address_ranges: list[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
-        response = self._forward(
-            "trace_start",
-            self.backend.configure_event_filters(event_types=event_types, address_ranges=address_ranges),
-        )
+        backend_trace_start = getattr(self.backend, "trace_start", None)
+        if callable(backend_trace_start):
+            response = self._forward(
+                "trace_start",
+                backend_trace_start(event_types=event_types, address_ranges=address_ranges),
+            )
+        else:
+            response = self._forward(
+                "trace_start",
+                self.backend.configure_event_filters(event_types=event_types, address_ranges=address_ranges),
+            )
         filters = response.get("result", {}).get("filters", {})
         trace_event_types = filters.get("event_types", []) if isinstance(filters, dict) else []
         trace_address_ranges = filters.get("address_ranges", []) if isinstance(filters, dict) else []
-        self.state.trace_active = True
+        result = response.get("result", {})
+        self.state.trace_active = bool(result.get("trace_active", True))
+        if isinstance(result.get("trace_kind"), str):
+            self.state.trace_kind = result["trace_kind"]
+        if isinstance(result.get("trace_file"), str):
+            self.state.trace_file = result["trace_file"]
         self.state.trace_event_types = list(trace_event_types if isinstance(trace_event_types, list) else [])
         self.state.trace_address_ranges = list(trace_address_ranges if isinstance(trace_address_ranges, list) else [])
         self.state.trace_start_head = int(self.state.trace_head)
@@ -356,26 +370,55 @@ class AnalysisSession:
             "trace_start",
             {
                 "filters": filters,
-                "trace_active": True,
+                "trace_active": self.state.trace_active,
+                "trace_kind": self.state.trace_kind,
+                "trace_file": self.state.trace_file,
                 "trace_start_head": self.state.trace_start_head,
             },
         )
 
     def trace_stop(self) -> dict[str, Any]:
-        self.state.trace_active = False
+        backend_trace_stop = getattr(self.backend, "trace_stop", None)
+        if callable(backend_trace_stop):
+            response = self._forward("trace_stop", backend_trace_stop())
+            result = response.get("result", {})
+            self.state.trace_active = bool(result.get("trace_active", False))
+            if "trace_kind" in result:
+                self.state.trace_kind = result.get("trace_kind")
+            elif not self.state.trace_active:
+                self.state.trace_kind = None
+            if "trace_file" in result:
+                self.state.trace_file = result.get("trace_file")
+        else:
+            self.state.trace_active = False
+            self.state.trace_kind = None
         return self._response(
             "trace_stop",
             {
-                "trace_active": False,
+                "trace_active": self.state.trace_active,
+                "trace_kind": self.state.trace_kind,
+                "trace_file": self.state.trace_file,
                 "trace_start_head": self.state.trace_start_head,
             },
         )
 
     def trace_status(self) -> dict[str, Any]:
+        backend_trace_status = getattr(self.backend, "trace_status", None)
+        if callable(backend_trace_status):
+            response = self._forward("trace_status", backend_trace_status())
+            result = response.get("result", {})
+            if "trace_active" in result:
+                self.state.trace_active = bool(result.get("trace_active"))
+            if "trace_kind" in result:
+                self.state.trace_kind = result.get("trace_kind")
+            if "trace_file" in result:
+                self.state.trace_file = result.get("trace_file")
         return self._response(
             "trace_status",
             {
                 "trace_active": self.state.trace_active,
+                "trace_kind": self.state.trace_kind,
+                "trace_file": self.state.trace_file,
                 "trace_event_types": list(self.state.trace_event_types),
                 "trace_address_ranges": list(self.state.trace_address_ranges),
                 "trace_start_head": self.state.trace_start_head,
@@ -443,6 +486,8 @@ class AnalysisSession:
         self.backend.close()
         self.state.session_status = "closed"
         self.state.trace_active = False
+        self.state.trace_kind = None
+        self.state.trace_file = None
         return self._response("close", {})
 
     def _forward(self, command: str, payload: dict[str, Any]) -> dict[str, Any]:
