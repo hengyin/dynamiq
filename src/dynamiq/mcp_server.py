@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ JSON = dict[str, Any]
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "dynamiq"
 SERVER_VERSION = "0.1.0"
+MCP_LOCKED_QEMU_PATH_ENV = "DYNAMIQ_MCP_QEMU_USER_PATH"
 
 
 @dataclass(slots=True)
@@ -110,8 +112,10 @@ class InteractiveAnalysisMcpServer:
         try:
             if name == "start":
                 session = self._ensure_session()
-                qemu_config = self._parse_object(arguments, "qemu_config", default={})
-                qemu_config.setdefault("launch", True)
+                qemu_config: JSON = {"launch": True}
+                locked_qemu_path = os.getenv(MCP_LOCKED_QEMU_PATH_ENV)
+                if isinstance(locked_qemu_path, str) and locked_qemu_path.strip():
+                    qemu_config["qemu_user_path"] = locked_qemu_path.strip()
                 target_value = arguments.get("target")
                 if not isinstance(target_value, str) or target_value.strip() == "":
                     return self._tool_error(
@@ -610,35 +614,6 @@ class InteractiveAnalysisMcpServer:
                             "type": ["string", "null"],
                             "description": "Working directory for process launch.",
                             "default": None,
-                        },
-                        "qemu_config": {
-                            "type": "object",
-                            "description": (
-                                "Optional backend launch settings. "
-                                "If omitted, launch defaults to true."
-                            ),
-                            "properties": {
-                                "launch": {
-                                    "type": "boolean",
-                                    "description": "Whether backend should launch qemu-user.",
-                                    "default": True,
-                                },
-                                "qemu_user_path": {
-                                    "type": "string",
-                                    "description": "Path to qemu-x86_64 binary.",
-                                },
-                                "launch_connect_timeout": {
-                                    "type": "number",
-                                    "exclusiveMinimum": 0,
-                                    "description": "Seconds to wait for RPC socket connectivity.",
-                                },
-                                "instrumentation_rpc_socket_path": {
-                                    "type": "string",
-                                    "description": "UNIX socket path for instrumentation RPC.",
-                                },
-                            },
-                            "additionalProperties": True,
-                            "default": {},
                         },
                     },
                     "required": ["target"],

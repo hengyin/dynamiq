@@ -195,7 +195,7 @@ def test_mcp_tool_call_start() -> None:
             "method": "tools/call",
             "params": {
                 "name": "start",
-                "arguments": {"target": "/tmp/a.out", "args": ["x"], "qemu_config": {}},
+                "arguments": {"target": "/tmp/a.out", "args": ["x"]},
             },
         }
     )
@@ -276,6 +276,27 @@ def test_mcp_tool_call_start_defaults_launch_true() -> None:
     assert response is not None
     assert response["result"]["isError"] is False
     assert fake.last_qemu_config == {"launch": True}
+
+
+def test_mcp_tool_call_start_uses_server_locked_qemu_path(monkeypatch) -> None:  # noqa: ANN001
+    fake = FakeSession()
+    server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
+    monkeypatch.setenv("DYNAMIQ_MCP_QEMU_USER_PATH", "/opt/symfit/symfit-x86_64")
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 33,
+            "method": "tools/call",
+            "params": {
+                "name": "start",
+                "arguments": {"target": "/tmp/a.out"},
+            },
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    assert fake.last_qemu_config == {"launch": True, "qemu_user_path": "/opt/symfit/symfit-x86_64"}
 
 
 def test_mcp_tool_call_start_auto_restarts_existing_session() -> None:
