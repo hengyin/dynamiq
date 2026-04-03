@@ -204,6 +204,17 @@ class FakeInstrumentationRpcClient:
                 "symbolic": True,
                 "label": "0x52",
             }
+        if method == "get_symbolic_expression":
+            return {
+                "label": params["label"],
+                "expression": "Xor:i64(0x22:i64, Add:i64(0x11:i64, input(0):i8))",
+                "op": "Xor",
+                "size": 64,
+                "left_label": 0,
+                "right_label": 2,
+                "op1": 34,
+                "op2": 0,
+            }
         if method == "disassemble":
             return {
                 "instructions": [
@@ -938,6 +949,24 @@ def test_backend_get_registers_uses_rpc_channel() -> None:
     assert rpc.requests[0] == ("get_registers", {"names": ["rax"]})
     assert result["state"]["registers"]["rip"] == "0x401000"
     assert result["state"]["pc"] == "0x401000"
+
+
+def test_backend_get_symbolic_expression_uses_rpc_channel() -> None:
+    instrumentation = FakeInstrumentationClient()
+    rpc = FakeInstrumentationRpcClient(instrumentation)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=FakeQmpClient(),
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+
+    result = backend.get_symbolic_expression("0x3")
+
+    assert result["result"]["label"] == "0x3"
+    assert result["result"]["op"] == "Xor"
+    assert "Add:i64" in result["result"]["expression"]
+    assert rpc.requests[0] == ("get_symbolic_expression", {"label": "0x3"})
 
 
 def test_backend_read_memory_uses_rpc_channel() -> None:

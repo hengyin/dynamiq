@@ -389,6 +389,10 @@ class QemuUserInstrumentedBackend:
             params["name"] = name
         return self._response(self._rpc_request("symbolize_register", params))
 
+    def get_symbolic_expression(self, label: str) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("get_symbolic_expression", {"label": label}))
+
     def disassemble(self, address: str, count: int) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.disassemble:

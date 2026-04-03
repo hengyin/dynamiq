@@ -232,6 +232,9 @@ class InteractiveAnalysisMcpServer:
                         name=label_name,
                     )
                 )
+            if name == "expr":
+                label = self._parse_nonempty_string(arguments, "label")
+                return self._tool_ok(self._ensure_session().get_symbolic_expression(label=label))
             if name == "maps":
                 return self._tool_ok(self._ensure_session().list_memory_maps())
             if name == "step":
@@ -813,6 +816,18 @@ class InteractiveAnalysisMcpServer:
                         "name": {"type": ["string", "null"], "description": "Optional symbolic variable hint."},
                     },
                     "required": ["register"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="expr",
+                description="Show the symbolic expression for a concrete symbolic label.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "Symbolic label id as a hex string, for example 0x3."},
+                    },
+                    "required": ["label"],
                     "additionalProperties": False,
                 },
             ),

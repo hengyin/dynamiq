@@ -99,6 +99,18 @@ class FakeSession:
             "result": {"register": register, "name": name, "label": "0x42", "symbolic": True},
         }
 
+    def get_symbolic_expression(self, label):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "get_symbolic_expression",
+            "result": {
+                "label": label,
+                "expression": "Xor:i64(0x22:i64, Add:i64(0x11:i64, input(0):i8))",
+                "op": "Xor",
+                "size": 64,
+            },
+        }
+
     def list_memory_maps(self):
         return {"ok": True, "command": "list_memory_maps", "result": {"maps": {"regions": []}}}
 
@@ -210,6 +222,7 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "trace_get" in names
     assert "symbolize_mem" in names
     assert "symbolize_reg" in names
+    assert "expr" in names
     assert "bt" in names
     assert "bp_list" in names
     assert "stdin" not in names
@@ -254,6 +267,26 @@ def test_mcp_tool_call_symbolize_memory() -> None:
     result = response["result"]
     assert result["isError"] is False
     assert result["structuredContent"]["result"]["address"] == "0x401000"
+
+
+def test_mcp_tool_call_expr() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": {
+                "name": "expr",
+                "arguments": {"label": "0x3"},
+            },
+        }
+    )
+    assert response is not None
+    result = response["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["result"]["label"] == "0x3"
+    assert "Add:i64" in result["structuredContent"]["result"]["expression"]
 
 
 def test_mcp_tool_call_symbolize_register() -> None:

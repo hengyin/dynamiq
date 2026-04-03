@@ -310,6 +310,12 @@ class AnalysisSession:
             raise UnsupportedOperationError("backend does not support register symbolization")
         return self._forward("symbolize_register", backend_method(register=register, name=name))
 
+    def get_symbolic_expression(self, label: str) -> dict[str, Any]:
+        backend_method = getattr(self.backend, "get_symbolic_expression", None)
+        if not callable(backend_method):
+            raise UnsupportedOperationError("backend does not support symbolic expression lookup")
+        return self._forward("get_symbolic_expression", backend_method(label=label))
+
     def disassemble(self, address: str, count: int = 16) -> dict[str, Any]:
         if count > self.config.max_disassembly_instructions:
             raise InvalidStateError(

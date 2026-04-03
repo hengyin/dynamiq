@@ -130,6 +130,24 @@ def test_live_qemu_backend_rpc_trace_lifecycle(live_qemu_start_kwargs: dict[str,
 
 
 @pytest.mark.live_qemu
+def test_live_qemu_backend_get_symbolic_expression(live_qemu_start_kwargs: dict[str, object]) -> None:
+    backend = QemuUserInstrumentedBackend()
+    backend.start(**live_qemu_start_kwargs)
+    try:
+        sym_reg = backend.symbolize_register("rax", name="expr_probe")
+        label = sym_reg["result"]["label"]
+
+        expression = backend.get_symbolic_expression(label)
+
+        assert expression["result"]["label"] == label
+        assert expression["result"]["op"] == "Input"
+        assert expression["result"]["size"] >= 1
+        assert "input(" in expression["result"]["expression"]
+    finally:
+        backend.close()
+
+
+@pytest.mark.live_qemu
 def test_live_qemu_backend_symbolize_register_and_memory(live_qemu_start_kwargs: dict[str, object]) -> None:
     backend = QemuUserInstrumentedBackend()
     backend.start(**live_qemu_start_kwargs)
