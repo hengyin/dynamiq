@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 from .errors import EventValidationError
 
 
-class EventType(StrEnum):
+class EventType(str, Enum):
     BACKEND_READY = "backend_ready"
     BASIC_BLOCK = "basic_block"
     BRANCH = "branch"
