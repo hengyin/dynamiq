@@ -56,8 +56,6 @@ class AnalysisSession:
         self._merge_state(self.backend.get_state())
         return self._response("start", {"target": target})
 
-    def resume(self, timeout: float = 5.0) -> dict[str, Any]:
-        return self._forward("resume", self.backend.resume(timeout))
 
     def pause(self, timeout: float = 5.0) -> dict[str, Any]:
         if self.state.session_status in {"not_started", "closed"}:
@@ -67,6 +65,9 @@ class AnalysisSession:
             return self._response("pause", {"status": "paused", "noop": True})
         return self._forward("pause", self.backend.pause(timeout))
 
+    def resume(self, timeout: float = 5.0) -> dict[str, Any]:
+        return self._forward("resume", self.backend.resume(timeout))
+
     def run_until_address(self, address: str, timeout: float = 5.0) -> dict[str, Any]:
         return self._forward("run_until_address", self.backend.run_until_address(address, timeout))
 
@@ -75,6 +76,27 @@ class AnalysisSession:
 
     def advance_basic_blocks(self, count: int = 1, timeout: float = 5.0) -> dict[str, Any]:
         return self._forward("advance_basic_blocks", self.backend.advance_basic_blocks(count, timeout))
+
+    def advance(self, mode: str, count: int | None = None, timeout: float = 5.0) -> dict[str, Any]:
+        normalized_mode = str(mode).strip().lower()
+        if normalized_mode not in {"continue", "insn", "bb", "return"}:
+            raise InvalidStateError("advance mode must be one of: continue, insn, bb, return")
+        if normalized_mode in {"insn", "bb"}:
+            if count is None:
+                count = 1
+            if count < 1:
+                raise InvalidStateError("advance count must be >= 1")
+        elif count is not None:
+            raise InvalidStateError("advance count is only valid for insn and bb modes")
+
+        if normalized_mode == "continue":
+            return self._advance_continue(timeout)
+        if normalized_mode == "insn":
+            return self._advance_counted(mode="insn", count=int(count), timeout=timeout)
+        if normalized_mode == "bb":
+            return self._advance_counted(mode="bb", count=int(count), timeout=timeout)
+        return self._advance_return(timeout)
+
 
     def bp_add(self, address: str) -> dict[str, Any]:
         normalized = str(address).strip()
@@ -132,23 +154,7 @@ class AnalysisSession:
             except UnsupportedOperationError:
                 pass
 
-        def _read_live_pc() -> int | None:
-            live_pc: int | None = None
-            try:
-                registers = self.get_registers(["rip", "eip", "pc"])["result"].get("registers", {})
-            except Exception:
-                registers = {}
-            for key in ("rip", "eip", "pc"):
-                value = registers.get(key)
-                parsed = self._parse_optional_address(value)
-                if parsed is not None:
-                    live_pc = parsed
-                    break
-            if live_pc is None:
-                live_pc = self._parse_optional_address(self.state.pc)
-            return live_pc
-
-        current_pc = _read_live_pc()
+        current_pc = self._read_live_pc()
         steps = 0
 
         if current_pc is not None and current_pc in targets:
@@ -159,7 +165,7 @@ class AnalysisSession:
             steps += 1
             current_pc = self._parse_optional_address(step_result.get("result", {}).get("pc"))
             if current_pc is None:
-                current_pc = _read_live_pc()
+                current_pc = self._read_live_pc()
 
         while steps <= max_steps:
             if current_pc is not None and current_pc in targets:
@@ -178,9 +184,203 @@ class AnalysisSession:
             steps += 1
             current_pc = self._parse_optional_address(step_result.get("result", {}).get("pc"))
             if current_pc is None:
-                current_pc = _read_live_pc()
+                current_pc = self._read_live_pc()
 
         raise InvalidStateError("max_steps exceeded before hitting any requested address")
+
+    def _advance_continue(self, timeout: float) -> dict[str, Any]:
+        if self.breakpoints:
+            result = self.bp_run(timeout=timeout)
+            payload = dict(result.get("result", {}))
+            payload.update({"mode": "continue", "completed": False, "stop_reason": "breakpoint"})
+            return self._response("advance", payload)
+        result = self._forward("advance", self.backend.resume(timeout))
+        payload = dict(result.get("result", {}))
+        payload.setdefault("mode", "continue")
+        payload.setdefault("completed", False)
+        payload.setdefault("stop_reason", self._infer_stop_reason(payload, None, completed=False))
+        return self._response("advance", payload)
+
+    def _advance_counted(self, mode: str, count: int, timeout: float) -> dict[str, Any]:
+        current_pc = self._read_live_pc()
+        executed = 0
+        last_payload: dict[str, Any] = {}
+        if current_pc is not None and current_pc in self.breakpoints:
+            first_payload = self._advance_one_unit(mode, timeout)
+            executed += 1
+            current_pc = self._payload_pc(first_payload)
+            last_payload = first_payload
+            if current_pc is not None and current_pc in self.breakpoints:
+                payload = self._format_advance_result(
+                    mode=mode,
+                    requested_count=count,
+                    actual_count=executed,
+                    completed=False,
+                    stop_reason="breakpoint",
+                    payload=first_payload,
+                )
+                return self._response("advance", payload)
+            if self._payload_terminal(first_payload):
+                payload = self._format_advance_result(
+                    mode=mode,
+                    requested_count=count,
+                    actual_count=executed,
+                    completed=False,
+                    stop_reason=self._infer_stop_reason(first_payload, current_pc, completed=False),
+                    payload=first_payload,
+                )
+                return self._response("advance", payload)
+        while executed < count:
+            step_payload = self._advance_one_unit(mode, timeout)
+            executed += 1
+            current_pc = self._payload_pc(step_payload)
+            last_payload = step_payload
+            if current_pc is not None and current_pc in self.breakpoints:
+                payload = self._format_advance_result(
+                    mode=mode,
+                    requested_count=count,
+                    actual_count=executed,
+                    completed=False,
+                    stop_reason="breakpoint",
+                    payload=step_payload,
+                )
+                return self._response("advance", payload)
+            if self._payload_terminal(step_payload):
+                payload = self._format_advance_result(
+                    mode=mode,
+                    requested_count=count,
+                    actual_count=executed,
+                    completed=False,
+                    stop_reason=self._infer_stop_reason(step_payload, current_pc, completed=False),
+                    payload=step_payload,
+                )
+                return self._response("advance", payload)
+        payload = self._format_advance_result(
+            mode=mode,
+            requested_count=count,
+            actual_count=executed,
+            completed=True,
+            stop_reason="target_reached",
+            payload=last_payload,
+        )
+        return self._response("advance", payload)
+
+    def _advance_return(self, timeout: float) -> dict[str, Any]:
+        return_address = self._current_return_address()
+        if return_address is None:
+            raise InvalidStateError("unable to determine return address for current frame")
+        result = self.break_at_addresses([hex(return_address)], timeout=timeout, max_steps=10000)
+        payload = dict(result.get("result", {}))
+        payload.update(
+            {
+                "mode": "return",
+                "return_address": hex(return_address),
+                "completed": payload.get("matched_address") == hex(return_address),
+                "stop_reason": "target_reached" if payload.get("matched_address") == hex(return_address) else "breakpoint",
+            }
+        )
+        return self._response("advance", payload)
+
+    def _advance_one_unit(self, mode: str, timeout: float) -> dict[str, Any]:
+        if mode == "insn":
+            return self._forward("advance", self.backend.step(1, timeout)).get("result", {})
+        if mode == "bb":
+            return self._forward("advance", self.backend.advance_basic_blocks(1, timeout)).get("result", {})
+        raise InvalidStateError(f"unsupported advance mode: {mode}")
+
+    def _format_advance_result(
+        self,
+        *,
+        mode: str,
+        requested_count: int,
+        actual_count: int,
+        completed: bool,
+        stop_reason: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = dict(payload)
+        result["mode"] = mode
+        result["completed"] = completed
+        result["stop_reason"] = stop_reason
+        result["requested_count"] = requested_count
+        result["actual_count"] = actual_count
+        return result
+
+    def _payload_pc(self, payload: dict[str, Any]) -> int | None:
+        if not isinstance(payload, dict):
+            return self._read_live_pc()
+        for key in ("matched_pc", "pc", "matched_address"):
+            value = payload.get(key)
+            parsed = self._parse_optional_address(value)
+            if parsed is not None:
+                return parsed
+        return self._read_live_pc()
+
+    def _payload_terminal(self, payload: dict[str, Any]) -> bool:
+        status = payload.get("status") if isinstance(payload, dict) else None
+        if status == "exited":
+            return True
+        return self.state.session_status == "exited"
+
+    def _infer_stop_reason(self, payload: dict[str, Any], current_pc: int | None, completed: bool) -> str:
+        if current_pc is not None and current_pc in self.breakpoints:
+            return "breakpoint"
+        if isinstance(payload, dict):
+            for key in ("stop_reason", "reason"):
+                value = payload.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            status = payload.get("status")
+            if status == "exited":
+                return "exited"
+        if completed:
+            return "target_reached"
+        return "paused"
+
+    def _read_live_pc(self) -> int | None:
+        live_pc: int | None = None
+        try:
+            registers = self.get_registers(["rip", "eip", "pc"])["result"].get("registers", {})
+        except Exception:
+            registers = {}
+        for key in ("rip", "eip", "pc"):
+            value = registers.get(key)
+            parsed = self._parse_optional_address(value)
+            if parsed is not None:
+                live_pc = parsed
+                break
+        if live_pc is None:
+            live_pc = self._parse_optional_address(self.state.pc)
+        return live_pc
+
+    def _current_pointer_size(self) -> int:
+        regs64 = self.get_registers(["pc", "rip", "rbp", "rsp"]).get("result", {}).get("registers", {})
+        regs32 = self.get_registers(["pc", "eip", "ebp", "esp"]).get("result", {}).get("registers", {})
+        pc64 = self._parse_optional_address(regs64.get("pc") or regs64.get("rip"))
+        pc32 = self._parse_optional_address(regs32.get("pc") or regs32.get("eip"))
+        qemu_path = (self.state.launched_qemu_user_path or "").lower()
+        if "qemu-i386" in qemu_path:
+            return 4
+        if "qemu-x86_64" in qemu_path:
+            return 8
+        return 8 if pc64 is not None and (pc32 is None or pc64 > 0xFFFFFFFF) else 4
+
+    def _current_return_address(self) -> int | None:
+        try:
+            bt = self.backtrace(max_frames=2)
+            frames = bt.get("result", {}).get("frames", [])
+            if isinstance(frames, list) and len(frames) > 1:
+                ret = self._parse_optional_address(frames[1].get("pc"))
+                if ret is not None:
+                    return ret
+        except Exception:
+            pass
+        regs64 = self.get_registers(["rsp", "esp"]).get("result", {}).get("registers", {})
+        sp = self._parse_optional_address(regs64.get("rsp") or regs64.get("esp"))
+        if sp is None:
+            return None
+        pointer_size = self._current_pointer_size()
+        return self._read_pointer(sp, pointer_size)
 
     def write_stdin(self, data: str | bytes) -> dict[str, Any]:
         return self._forward("write_stdin", self.backend.write_stdin(data))

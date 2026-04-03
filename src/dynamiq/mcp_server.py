@@ -171,17 +171,16 @@ class InteractiveAnalysisMcpServer:
                         name_filter=name_filter,
                     )
                 )
-            if name == "run":
-                session = self._ensure_session()
+            if name == "advance":
                 timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
-                bp_list_result = session.bp_list()
-                breakpoints = bp_list_result.get("result", {}).get("breakpoints", [])
+                mode = self._parse_nonempty_string(arguments, "mode")
+                count = arguments.get("count")
+                if count is not None:
+                    count = self._parse_int(arguments, "count", required=True, minimum=1)
                 try:
-                    if isinstance(breakpoints, list) and len(breakpoints) > 0:
-                        return self._tool_ok(session.bp_run(timeout=timeout))
-                    return self._tool_ok(session.resume(timeout=timeout))
+                    return self._tool_ok(self._ensure_session().advance(mode=mode, count=count, timeout=timeout))
                 except SessionTimeoutError as exc:
-                    return self._tool_timeout(command="run", timeout=timeout, message=str(exc))
+                    return self._tool_timeout(command="advance", timeout=timeout, message=str(exc))
             if name == "pause":
                 timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
                 try:
@@ -237,24 +236,6 @@ class InteractiveAnalysisMcpServer:
                 return self._tool_ok(self._ensure_session().get_symbolic_expression(label=label))
             if name == "maps":
                 return self._tool_ok(self._ensure_session().list_memory_maps())
-            if name == "step":
-                count = self._parse_int(arguments, "count", default=1, minimum=1)
-                timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
-                return self._tool_ok(
-                    self._ensure_session().step(
-                        count=count,
-                        timeout=timeout,
-                    )
-                )
-            if name == "bb":
-                count = self._parse_int(arguments, "count", default=1, minimum=1)
-                timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
-                return self._tool_ok(
-                    self._ensure_session().advance_basic_blocks(
-                        count=count,
-                        timeout=timeout,
-                    )
-                )
             if name == "trace_start":
                 event_types = self._parse_optional_string_list(arguments, "event_types", default=None)
                 address_ranges = self._parse_optional_address_ranges(arguments, "address_ranges")
@@ -616,7 +597,7 @@ class InteractiveAnalysisMcpServer:
                 description=(
                     "Start an analysis session for a target binary. "
                     "After start, session is typically paused. "
-                    "Recommended next steps: syms -> bp_add (using loaded_address) -> run."
+                    "Recommended next steps: syms -> bp_add (using loaded_address) -> advance {\"mode\":\"continue\"}."
                 ),
                 input_schema={
                     "type": "object",
@@ -677,28 +658,32 @@ class InteractiveAnalysisMcpServer:
                 },
             ),
             ToolSpec(
-                name="run",
+                name="advance",
                 description=(
-                    "Run target execution. If breakpoints are configured, run until next breakpoint; "
-                    "otherwise plain resume. "
-                    "For interactive targets: run -> read stdout/stderr -> send input -> run. "
-                    "If the run window elapses, the result is non-fatal and includes "
-                    "reason=window_elapsed plus next_action=[stdout, stderr, state]. "
-                    "When window_elapsed is returned, MUST call stdout, stderr, and state "
-                    "before any recovery decision."
+                    "Advance execution using one of four modes: continue, insn, bb, or return. "
+                    "All modes may stop early on input, breakpoints, process exit, or other interactive stop conditions."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["continue", "insn", "bb", "return"],
+                            "description": "Advance mode: continue, insn, bb, or return.",
+                        },
+                        "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Required for insn and bb modes; ignored otherwise.",
+                        },
                         "timeout": {
                             "type": "number",
                             "exclusiveMinimum": 0,
-                            "description": (
-                                "Run window in seconds (field name `timeout` kept for compatibility)."
-                            ),
                             "default": 5.0,
+                            "description": "Execution window in seconds.",
                         }
                     },
+                    "required": ["mode"],
                     "additionalProperties": False,
                 },
             ),
@@ -836,60 +821,7 @@ class InteractiveAnalysisMcpServer:
                 description="List current memory map regions.",
                 input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             ),
-            ToolSpec(
-                name="step",
-                description=(
-                    "Single-step a number of instructions. "
-                    "If step window elapses, MUST call stdout, stderr, and state before recovery."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "count": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "description": "Instruction count to step.",
-                            "default": 1,
-                        },
-                        "timeout": {
-                            "type": "number",
-                            "exclusiveMinimum": 0,
-                            "description": (
-                                "Step window in seconds (field name `timeout` kept for compatibility)."
-                            ),
-                            "default": 5.0,
-                        },
-                    },
-                    "additionalProperties": False,
-                },
-            ),
-            ToolSpec(
-                name="bb",
-                description=(
-                    "Advance by a number of basic blocks. "
-                    "If execution window elapses, MUST call stdout, stderr, and state before recovery."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "count": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "description": "Number of basic blocks to execute before pausing.",
-                            "default": 1,
-                        },
-                        "timeout": {
-                            "type": "number",
-                            "exclusiveMinimum": 0,
-                            "description": (
-                                "Execution window in seconds (field name `timeout` kept for compatibility)."
-                            ),
-                            "default": 5.0,
-                        },
-                    },
-                    "additionalProperties": False,
-                },
-            ),
+
             ToolSpec(
                 name="trace_start",
                 description=(

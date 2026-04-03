@@ -53,6 +53,13 @@ class FakeSession:
     def pause(self, timeout=5.0):  # noqa: ANN001
         return {"ok": True, "command": "pause", "result": {"timeout": timeout}}
 
+    def advance(self, mode, count=None, timeout=5.0):  # noqa: ANN001
+        result = {"mode": mode, "timeout": timeout, "completed": mode != "continue", "stop_reason": "target_reached"}
+        if count is not None:
+            result["requested_count"] = count
+            result["actual_count"] = count
+        return {"ok": True, "command": "advance", "result": result}
+
     def get_registers(self, names=None):  # noqa: ANN001
         return {
             "ok": True,
@@ -208,8 +215,7 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert response is not None
     names = {item["name"] for item in response["result"]["tools"]}
     assert "start" in names
-    assert "step" in names
-    assert "run" in names
+    assert "advance" in names
     assert "syms" in names
     assert "pause" in names
     assert "send_bytes" in names
@@ -564,14 +570,14 @@ def test_mcp_tool_call_send_bytes_data_hex() -> None:
     assert response["result"]["structuredContent"]["result"]["written"] == 12
 
 
-def test_mcp_tool_call_run_rejects_nonpositive_timeout() -> None:
+def test_mcp_tool_call_advance_rejects_nonpositive_timeout() -> None:
     server = _server()
     response = server.handle_request(
         {
             "jsonrpc": "2.0",
             "id": 577,
             "method": "tools/call",
-            "params": {"name": "run", "arguments": {"timeout": 0}},
+            "params": {"name": "advance", "arguments": {"mode": "continue", "timeout": 0}},
         }
     )
     assert response is not None
@@ -651,44 +657,45 @@ def test_mcp_stdout_rejects_negative_wait_ms() -> None:
     assert "wait_ms must be >= 0" in text
 
 
-def test_mcp_tool_call_resume() -> None:
+def test_mcp_tool_call_advance_continue() -> None:
     server = _server()
     response = server.handle_request(
         {
             "jsonrpc": "2.0",
             "id": 6,
             "method": "tools/call",
-            "params": {"name": "run", "arguments": {"timeout": 1.5}},
+            "params": {"name": "advance", "arguments": {"mode": "continue", "timeout": 1.5}},
         }
     )
     assert response is not None
     assert response["result"]["isError"] is False
-    assert response["result"]["structuredContent"]["command"] == "resume"
+    assert response["result"]["structuredContent"]["command"] == "advance"
+    assert response["result"]["structuredContent"]["result"]["mode"] == "continue"
 
 
-def test_mcp_tool_call_run_uses_breakpoint_when_configured() -> None:
-    class BreakpointSession(FakeSession):
-        def bp_list(self):
-            return {"ok": True, "command": "bp_list", "result": {"breakpoints": ["0x401000"]}}
-
-    server = InteractiveAnalysisMcpServer(session_factory=BreakpointSession)
+def test_mcp_tool_call_advance_insn() -> None:
+    server = _server()
     response = server.handle_request(
         {
             "jsonrpc": "2.0",
             "id": 601,
             "method": "tools/call",
-            "params": {"name": "run", "arguments": {"timeout": 1.5}},
+            "params": {"name": "advance", "arguments": {"mode": "insn", "count": 3, "timeout": 1.5}},
         }
     )
     assert response is not None
     assert response["result"]["isError"] is False
-    assert response["result"]["structuredContent"]["command"] == "bp_run"
+    payload = response["result"]["structuredContent"]
+    assert payload["command"] == "advance"
+    assert payload["result"]["mode"] == "insn"
+    assert payload["result"]["requested_count"] == 3
 
 
-def test_mcp_tool_call_run_timeout_is_non_fatal() -> None:
+def test_mcp_tool_call_advance_timeout_is_non_fatal() -> None:
     class TimeoutSession(FakeSession):
-        def resume(self, timeout=5.0):  # noqa: ANN001
-            raise SessionTimeoutError(f"timed out waiting for run condition ({timeout}s)")
+        def advance(self, mode, count=None, timeout=5.0):  # noqa: ANN001
+            del mode, count
+            raise SessionTimeoutError(f"timed out waiting for advance condition ({timeout}s)")
 
     server = InteractiveAnalysisMcpServer(session_factory=TimeoutSession)
     response = server.handle_request(
@@ -696,17 +703,17 @@ def test_mcp_tool_call_run_timeout_is_non_fatal() -> None:
             "jsonrpc": "2.0",
             "id": 602,
             "method": "tools/call",
-            "params": {"name": "run", "arguments": {"timeout": 2.0}},
+            "params": {"name": "advance", "arguments": {"mode": "continue", "timeout": 2.0}},
         }
     )
     assert response is not None
     assert response["result"]["isError"] is False
     text_payload = json.loads(response["result"]["content"][0]["text"])
-    assert text_payload["command"] == "run"
+    assert text_payload["command"] == "advance"
     assert text_payload["ok"] is False
     assert text_payload["result"]["timed_out"] is True
     payload = response["result"]["structuredContent"]
-    assert payload["command"] == "run"
+    assert payload["command"] == "advance"
     assert payload["result"]["timed_out"] is True
     assert payload["result"]["timeout"] == 2.0
 

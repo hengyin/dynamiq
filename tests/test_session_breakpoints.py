@@ -232,3 +232,37 @@ def test_session_pause_raises_when_not_started() -> None:
     session = AnalysisSession(backend=FakeBackend())
     with pytest.raises(InvalidStateError, match="session is not started"):
         session.pause(timeout=1.0)
+
+
+def test_session_advance_continue_uses_breakpoint_logic_when_present() -> None:
+    backend = FakeBackend()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+    session.bp_add("0x1008")
+
+    result = session.advance(mode="continue", timeout=1.0)
+
+    assert result["command"] == "advance"
+    assert result["result"]["mode"] == "continue"
+    assert result["result"]["stop_reason"] == "breakpoint"
+    assert result["result"]["matched_address"] == "0x1008"
+
+
+def test_session_advance_insn_counts_and_stops_at_target() -> None:
+    backend = FakeBackend()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+
+    result = session.advance(mode="insn", count=2, timeout=1.0)
+
+    assert result["result"]["mode"] == "insn"
+    assert result["result"]["completed"] is True
+    assert result["result"]["requested_count"] == 2
+    assert result["result"]["actual_count"] == 2
+    assert backend.step_calls == 2
+
+
+def test_session_advance_rejects_invalid_mode() -> None:
+    session = AnalysisSession(backend=FakeBackend())
+    with pytest.raises(InvalidStateError, match="advance mode"):
+        session.advance(mode="weird", timeout=1.0)

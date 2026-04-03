@@ -9,11 +9,11 @@ This playbook defines the required operating pattern for LLM-driven analysis ses
 - Always set breakpoints from `symbols[].loaded_address`.
 
 2. Do not assume output/state.
-- Poll `stdout` and `stderr` after each `run` and each `send_*`.
+- Poll `stdout` and `stderr` after each `advance` with `mode=continue` and after each `send_*`.
 - Check `state` to confirm `session_status` transitions.
 
 3. Keep the interaction loop tight.
-- `start` -> `syms` -> `bp_add` (optional) -> `run` -> `stdout`/`stderr` -> `send_line`/`send_bytes` -> `run` -> repeat.
+- `start` -> `syms` -> `bp_add` (optional) -> `advance {"mode":"continue"}` -> `stdout`/`stderr` -> `send_line`/`send_bytes` -> `advance {"mode":"continue"}` -> repeat.
 
 4. Use the right input tool.
 - `send_line` for menu/prompt-driven interaction.
@@ -26,10 +26,10 @@ This playbook defines the required operating pattern for LLM-driven analysis ses
 2. `state` (confirm session started)
 3. `syms` (optional name filter)
 4. `bp_clear` then `bp_add` as needed
-5. `run`
+5. `advance {"mode":"continue"}`
 6. `stdout` + `stderr`
 7. `send_line` or `send_bytes`
-8. `run`
+8. `advance {"mode":"continue"}`
 9. `state`, `regs`, `disasm`, `mem`, `maps` as needed
 10. `close`
 
@@ -39,13 +39,12 @@ This playbook defines the required operating pattern for LLM-driven analysis ses
 - Use `regs` for both concrete register values and symbolic register labels.
 - Use `symbolize_mem` only while paused to make a guest memory range symbolic.
 - Use `symbolize_reg` only while paused to make a guest register symbolic.
+- After discovering a non-zero label in `regs.result.symbolic_registers` or `mem.result.symbolic_bytes`, use `expr` to inspect that label's symbolic expression.
 
 ## Breakpoint Behavior
 
-- `run` is breakpoint-aware:
-  - if breakpoints exist: run until next breakpoint
-  - otherwise: plain resume
-- `run` timeout is non-fatal:
+- `advance` uses one of four modes: `continue`, `insn`, `bb`, or `return`.
+- `advance` timeout is non-fatal:
   - treat as `timed_out` (waiting for input/condition), not session failure
   - always follow with `stdout` + `stderr` + `state` before deciding recovery
 - `pause` is independent and can be called anytime during an active session.

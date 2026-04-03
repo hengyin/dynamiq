@@ -124,9 +124,9 @@ local `tools/qemu/` cache, and exercises:
 
 1. `query_status`
 2. `get_registers`
-3. `advance_basic_blocks(1)`
+3. `advance(mode="bb", count=1)`
 4. `disassemble(...)` from live runtime `rip`
-5. `run_until_address(...)` using a future instruction address
+5. `advance(mode="insn", count=1)` for fine-grained motion
 6. `read_memory`
 
 ## MCP Server (stdio)
@@ -154,12 +154,11 @@ PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 ### Exposed tools
 
 - `start`, `close`, `caps`, `state`
-- `run`, `pause`
+- `advance`, `pause`
 - `send_bytes`, `send_line`, `send_file`, `stdout`, `stderr`
 - `regs`, `bt`, `disasm`, `mem`, `maps`, `syms`
-- `symbolize_mem`, `symbolize_reg`
+- `symbolize_mem`, `symbolize_reg`, `expr`
 - `trace_start`, `trace_stop`, `trace_status`, `trace_get`
-- `step`, `bb`
 - `bp_add`, `bp_del`, `bp_list`, `bp_clear`
 
 `regs` and `mem` include symbolic metadata when the backend exposes it:
@@ -167,13 +166,14 @@ PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 - `mem.result.symbolic_bytes`
 
 Use `symbolize_mem` and `symbolize_reg` to inject symbolic state into the current paused execution.
+Use `expr` to render the symbolic expression for a specific non-zero label discovered through `regs` or `mem`.
 
 ### MCP quickstart for interactive stdin/stdout
 
 Use this order for interactive programs:
 
 1. `start`
-2. `run`
+2. `advance` with `{"mode":"continue"}`
 3. one or more `send_bytes` / `send_line` / `send_file`
 4. poll `stdout` and `stderr`
 
@@ -187,9 +187,10 @@ Example `tools/call` arguments:
 }
 ```
 
-- `run`
+- `advance`
 ```json
 {
+  "mode": "continue",
   "timeout": 5.0
 }
 ```
@@ -265,10 +266,10 @@ the backend adapter.
 
 - `send_bytes` appears stuck:
   Call includes neither `data` nor `data_hex`. Send `{"data":"...\\n"}` for text or `{"data_hex":"..."}` for raw bytes.
-- `run` returns timeout:
+- `advance` returns timeout:
   This is often expected for interactive flows (waiting for input or breakpoint condition). Treat as non-fatal and immediately check `stdout`, `stderr`, and `state`.
 - Session is `idle` and target is not running:
-  Use `start` (defaults to launch mode), then `run`.
+  Use `start` (defaults to launch mode), then `advance {"mode":"continue"}`.
 - Trace start rejects unsupported filters:
   The SymFit RPC backend currently supports only `event_types=["basic_block"]`
   and does not support address-range filtering.

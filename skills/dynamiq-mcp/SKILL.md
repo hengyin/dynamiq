@@ -1,6 +1,6 @@
 ---
 name: dynamiq-mcp
-description: Use when operating the Interactive Dynamic Analysis MCP server (`dynamiq`) for live binary sessions, including start/run loops, breakpoint placement from session symbols, stdin payload delivery, and output/state polling.
+description: Use when operating the Interactive Dynamic Analysis MCP server (`dynamiq`) for live binary sessions, including start/advance loops, breakpoint placement from session symbols, stdin payload delivery, and output/state polling.
 ---
 
 # Dynamiq MCP Skill
@@ -40,13 +40,13 @@ Dynamiq provides **two complementary interfaces** for analyzing target programs:
 - Always call `syms` in the current session and use `symbols[].loaded_address` for `bp_add`.
 
 2. Always close the run/input/output loop.
-- After each `run`, call `stdout`, `stderr`, and usually `state`.
-- After each `send_line`, `send_bytes`, or `send_file`, call `run` again, then poll `stdout`/`stderr`.
+- After each `advance` with `mode="continue"`, call `stdout`, `stderr`, and usually `state`.
+- After each `send_line`, `send_bytes`, or `send_file`, call `advance {"mode":"continue"}` again, then poll `stdout`/`stderr`.
 
 3. Treat elapsed run windows as non-fatal.
-- A `run` result with `reason=window_elapsed` is not a failure.
+- An `advance` result with `reason=window_elapsed` is not a failure.
 - Mandatory sequence after `window_elapsed`: `stdout` -> `stderr` -> `state`.
-- Do not close/restart solely because the run window elapsed.
+- Do not close/restart solely because the advance window elapsed.
 
 4. Use the correct stdin tool.
 - `send_line` for menu/prompt interactions.
@@ -65,14 +65,15 @@ Dynamiq provides **two complementary interfaces** for analyzing target programs:
 2. `state` to confirm launch.
 3. `syms` (optional `name_filter`) and collect `loaded_address` values.
 4. `bp_clear` then `bp_add` if breakpoints are needed.
-5. `run`.
+5. `advance {"mode":"continue"}`.
 6. `stdout` + `stderr`.
 7. `send_line` / `send_bytes` / `send_file` as needed.
-8. Repeat `run` -> `stdout` -> `stderr` -> `state`.
-9. Use `regs`, `bt`, `disasm`, `mem`, `maps`, `step`, `bb` for inspection.
+8. Repeat `advance {"mode":"continue"}` -> `stdout` -> `stderr` -> `state`.
+9. Use `regs`, `bt`, `disasm`, `mem`, `maps`, and `advance` for motion/inspection.
 10. Use `symbolize_mem` or `symbolize_reg` only when you intentionally want to inject symbolic state into the paused execution.
-11. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
-12. `close` at end.
+11. After finding a non-zero symbolic label in `regs` or `mem`, use `expr` to inspect the symbolic expression for that label.
+12. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
+13. `close` at end.
 
 Trace file mode:
 - If live event streaming is unstable, set `start.qemu_config.instrumentation_trace_file_path` and use file-backed tracing via the same `trace_*` tools.
@@ -81,7 +82,7 @@ Trace file mode:
 ## Tool Choice Guide
 
 - `start`: begin a session; requires non-empty string `target`.
-- `run`: resume execution; breakpoint-aware.
+- `advance`: motion control with `continue`, `insn`, `bb`, or `return` modes; all modes may stop early on input, breakpoints, or exit.
 - `pause`: force pause while running.
 - `syms`: resolve runtime addresses for this session only.
 - `bp_add` / `bp_del` / `bp_clear` / `bp_list`: breakpoint management.
@@ -92,6 +93,7 @@ Trace file mode:
 - `regs` / `bt` / `disasm` / `mem` / `maps`: low-level state inspection.
 - `regs` also carries symbolic register labels in `result.symbolic_registers` when supported.
 - `mem` also carries symbolic byte labels in `result.symbolic_bytes` when supported.
+- `expr`: render the symbolic expression for one concrete symbolic label, typically after discovering that label through `regs` or `mem`.
 - `symbolize_mem` / `symbolize_reg`: inject symbolic state into paused memory/registers.
 - `bt`: best-effort stack backtrace; use after breakpoints to quickly map call chains.
 - `trace_start` / `trace_stop` / `trace_status` / `trace_get`: trace tracing workflow and retrieval.
@@ -119,7 +121,7 @@ Use a two-loop strategy: breadth first, then depth on hotspots.
 
 2. Run a structured input matrix.
 - Prefer grouped cases over ad-hoc typing: valid, boundary, malformed, oversized, empty, and command-like inputs.
-- For each case, keep the same loop: `run` -> `stdout` -> `stderr` -> `state`.
+- For each case, keep the same loop: `advance {"mode":"continue"}` -> `stdout` -> `stderr` -> `state`.
 
 3. Track state-space explicitly.
 - Treat each unique prompt/page/handler combination as a node.
@@ -146,6 +148,7 @@ Use a two-loop strategy: breadth first, then depth on hotspots.
 
 - Prefer absolute target paths in `start`.
 - For stack memory reads, call `regs` first and use live `rsp` from that result.
+- For symbolic reasoning, discover labels through `regs` or `mem` first, then call `expr` on the specific non-zero label you want to inspect.
 - For call-chain context, call `bt` after a breakpoint hit before deeper `disasm`/`mem`.
 - Do not reuse addresses from previous sessions.
 - If tool output indicates malformed arguments, fix input shape before retrying.
