@@ -4,7 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
+SOURCE_KIND="symfit"
 QEMU_SRC="${HOME}/git/qemu"
+SYMFIT_SRC="${HOME}/git/symfit"
 BUILD_DIR="/tmp/qemu-build-ia"
 OUT_DIR="${REPO_ROOT}/tools/qemu"
 TARGET_LIST="i386-linux-user,x86_64-linux-user"
@@ -20,6 +22,8 @@ Usage:
   scripts/build_qemu_toolchain.sh [options]
 
 Options:
+  --source-kind <kind>   Source type: symfit or qemu (default: symfit)
+  --symfit-src <path>    SymFit source tree (default: ~/git/symfit)
   --qemu-src <path>      QEMU source tree (default: ~/git/qemu)
   --build-dir <path>     Build directory (default: /tmp/qemu-build-ia)
   --out-dir <path>       Output directory (default: ./tools/qemu)
@@ -50,6 +54,14 @@ run() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --source-kind)
+      SOURCE_KIND="$2"
+      shift 2
+      ;;
+    --symfit-src)
+      SYMFIT_SRC="$2"
+      shift 2
+      ;;
     --qemu-src)
       QEMU_SRC="$2"
       shift 2
@@ -90,29 +102,73 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! -d "${QEMU_SRC}" ]]; then
-  echo "QEMU source directory not found: ${QEMU_SRC}" >&2
-  exit 1
-fi
-if [[ ! -x "${QEMU_SRC}/configure" ]]; then
-  echo "QEMU configure script missing or not executable: ${QEMU_SRC}/configure" >&2
+if [[ "${SOURCE_KIND}" != "symfit" && "${SOURCE_KIND}" != "qemu" ]]; then
+  echo "Unsupported --source-kind: ${SOURCE_KIND}" >&2
   exit 1
 fi
 
-if [[ "${CLEAN}" -eq 1 ]]; then
-  run rm -rf "${BUILD_DIR}"
-fi
-
-run mkdir -p "${BUILD_DIR}"
 run mkdir -p "${OUT_DIR}"
 
-# Always re-run configure so existing build dirs get updated target lists.
-run bash -lc "cd \"${BUILD_DIR}\" && \"${QEMU_SRC}/configure\" --target-list=\"${TARGET_LIST}\" --disable-werror"
+copy_outputs() {
+  local i386_src="$1"
+  local x86_64_src="$2"
 
-run make -C "${BUILD_DIR}" -j"${JOBS}" qemu-i386 qemu-x86_64
-run cp -f "${BUILD_DIR}/qemu-i386" "${OUT_DIR}/qemu-i386-instrumented"
-run cp -f "${BUILD_DIR}/qemu-x86_64" "${OUT_DIR}/qemu-x86_64-instrumented"
-run chmod 755 "${OUT_DIR}/qemu-i386-instrumented" "${OUT_DIR}/qemu-x86_64-instrumented"
+  if [[ ! -x "${i386_src}" ]]; then
+    echo "Missing i386 binary: ${i386_src}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${x86_64_src}" ]]; then
+    echo "Missing x86_64 binary: ${x86_64_src}" >&2
+    exit 1
+  fi
+
+  run cp -f "${i386_src}" "${OUT_DIR}/qemu-i386-instrumented"
+  run cp -f "${x86_64_src}" "${OUT_DIR}/qemu-x86_64-instrumented"
+  run chmod 755 "${OUT_DIR}/qemu-i386-instrumented" "${OUT_DIR}/qemu-x86_64-instrumented"
+}
+
+if [[ "${SOURCE_KIND}" == "qemu" ]]; then
+  if [[ ! -d "${QEMU_SRC}" ]]; then
+    echo "QEMU source directory not found: ${QEMU_SRC}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${QEMU_SRC}/configure" ]]; then
+    echo "QEMU configure script missing or not executable: ${QEMU_SRC}/configure" >&2
+    exit 1
+  fi
+
+  if [[ "${CLEAN}" -eq 1 ]]; then
+    run rm -rf "${BUILD_DIR}"
+  fi
+
+  run mkdir -p "${BUILD_DIR}"
+
+  # Always re-run configure so existing build dirs get updated target lists.
+  run bash -lc "cd \"${BUILD_DIR}\" && \"${QEMU_SRC}/configure\" --target-list=\"${TARGET_LIST}\" --disable-werror"
+  run make -C "${BUILD_DIR}" -j"${JOBS}" qemu-i386 qemu-x86_64
+  copy_outputs "${BUILD_DIR}/qemu-i386" "${BUILD_DIR}/qemu-x86_64"
+else
+  local_symfit_build_dir="${BUILD_DIR}"
+
+  if [[ ! -d "${SYMFIT_SRC}" ]]; then
+    echo "SymFit source directory not found: ${SYMFIT_SRC}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${SYMFIT_SRC}/build.sh" ]]; then
+    echo "SymFit build script missing or not executable: ${SYMFIT_SRC}/build.sh" >&2
+    exit 1
+  fi
+
+  if [[ "${CLEAN}" -eq 1 ]]; then
+    run rm -rf "${local_symfit_build_dir}"
+  fi
+
+  run mkdir -p "${local_symfit_build_dir}"
+  run bash -lc "cd \"${SYMFIT_SRC}\" && BUILD_DIR=\"${local_symfit_build_dir}\" SYMFIT_TARGET_LIST=\"${TARGET_LIST}\" JOBS=\"${JOBS}\" ./build.sh symfit-symsan"
+  copy_outputs \
+    "${local_symfit_build_dir}/symfit-symsan/i386-linux-user/symfit-i386" \
+    "${local_symfit_build_dir}/symfit-symsan/x86_64-linux-user/symfit-x86_64"
+fi
 
 echo "Built binaries:"
 echo "  ${OUT_DIR}/qemu-i386-instrumented"

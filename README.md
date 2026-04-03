@@ -18,7 +18,7 @@ This project is analysis-first: it focuses on controllable execution plus struct
 
 Requirements:
 
-- Python 3.11+
+- Python 3.10+
 - (for demos) `gcc` and `qemu-x86_64`
 
 Create a local environment and install dev dependencies:
@@ -29,7 +29,7 @@ python -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-### Build Instrumented QEMU Binaries
+### Build Instrumented Runtime Binaries
 
 Build both supported dynamiq runtimes into `tools/qemu/`:
 
@@ -37,13 +37,27 @@ Build both supported dynamiq runtimes into `tools/qemu/`:
 ./scripts/build_qemu_toolchain.sh
 ```
 
+By default this now builds from the local SymFit tree and copies the resulting
+runtime binaries into dynamiq's `tools/qemu/` cache using the conventional
+`qemu-*-instrumented` names expected by the launcher.
+
 Common overrides:
 
 ```bash
 ./scripts/build_qemu_toolchain.sh \
+  --symfit-src /home/heng/git/symfit \
+  --build-dir /tmp/symfit-build-ia \
+  --out-dir /home/heng/git/dynamiq/tools/qemu \
+  --clean
+```
+
+If you still want the legacy upstream-QEMU flow, use:
+
+```bash
+./scripts/build_qemu_toolchain.sh \
+  --source-kind qemu \
   --qemu-src /home/heng/git/qemu \
   --build-dir /tmp/qemu-build-ia \
-  --out-dir /home/heng/git/dynamiq/tools/qemu \
   --clean
 ```
 
