@@ -208,8 +208,8 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "trace_stop" in names
     assert "trace_status" in names
     assert "trace_get" in names
-    assert "sym_mem_mark" in names
-    assert "sym_reg_mark" in names
+    assert "symbolize_mem" in names
+    assert "symbolize_reg" in names
     assert "bt" in names
     assert "bp_list" in names
     assert "stdin" not in names
@@ -245,7 +245,7 @@ def test_mcp_tool_call_symbolize_memory() -> None:
             "id": 31,
             "method": "tools/call",
             "params": {
-                "name": "sym_mem_mark",
+                "name": "symbolize_mem",
                 "arguments": {"address": "0x401000", "size": 4, "name": "buf"},
             },
         }
@@ -264,7 +264,7 @@ def test_mcp_tool_call_symbolize_register() -> None:
             "id": 32,
             "method": "tools/call",
             "params": {
-                "name": "sym_reg_mark",
+                "name": "symbolize_reg",
                 "arguments": {"register": "rax", "name": "acc"},
             },
         }

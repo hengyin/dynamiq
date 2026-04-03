@@ -212,7 +212,7 @@ class InteractiveAnalysisMcpServer:
                         size=size,
                     )
                 )
-            if name == "sym_mem_mark":
+            if name == "symbolize_mem":
                 address = self._parse_nonempty_string(arguments, "address")
                 size = self._parse_int(arguments, "size", required=True, minimum=1)
                 label_name = self._parse_optional_string(arguments, "name", default=None)
@@ -223,7 +223,7 @@ class InteractiveAnalysisMcpServer:
                         name=label_name,
                     )
                 )
-            if name == "sym_reg_mark":
+            if name == "symbolize_reg":
                 register = self._parse_nonempty_string(arguments, "register")
                 label_name = self._parse_optional_string(arguments, "name", default=None)
                 return self._tool_ok(
@@ -790,7 +790,7 @@ class InteractiveAnalysisMcpServer:
                 },
             ),
             ToolSpec(
-                name="sym_mem_mark",
+                name="symbolize_mem",
                 description="Mark a guest memory range symbolic in the current paused execution.",
                 input_schema={
                     "type": "object",
@@ -804,7 +804,7 @@ class InteractiveAnalysisMcpServer:
                 },
             ),
             ToolSpec(
-                name="sym_reg_mark",
+                name="symbolize_reg",
                 description="Mark a guest register symbolic in the current paused execution.",
                 input_schema={
                     "type": "object",
