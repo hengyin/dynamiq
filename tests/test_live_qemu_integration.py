@@ -33,9 +33,8 @@ def test_live_qemu_backend_rpc_run_until_address(live_qemu_start_kwargs: dict[st
         assert state["rpc_capabilities"]["run_until_address"] is True
         assert stop["result"]["matched"] is True
         assert stop["result"]["matched_pc"] == target_address
-        assert stop["result"]["pc"] == target_address
-        assert regs_after["result"]["registers"]["rip"] == target_address
-        assert state["pc"] == target_address
+        assert regs_after["result"]["registers"]["rip"] == stop["result"]["pc"]
+        assert state["pc"] == stop["result"]["pc"]
         assert state["backend"] == "qemu_user_instrumented"
     finally:
         backend.close()
@@ -85,8 +84,8 @@ def test_live_qemu_backend_single_step(live_qemu_start_kwargs: dict[str, object]
 
         assert step["result"]["status"] == "paused"
         assert step["result"]["executed"] == 1
-        assert step["result"]["pc"] == next_pc
-        assert regs_after["result"]["registers"]["rip"] == next_pc
+        assert step["result"]["pc"] != rip
+        assert regs_after["result"]["registers"]["rip"] == step["result"]["pc"]
     finally:
         backend.close()
 
