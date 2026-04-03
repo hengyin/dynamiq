@@ -33,6 +33,13 @@ This playbook defines the required operating pattern for LLM-driven analysis ses
 9. `state`, `regs`, `disasm`, `mem`, `maps` as needed
 10. `close`
 
+## Symbolic State
+
+- Use `mem` for both concrete bytes and symbolic byte metadata.
+- Use `regs` for both concrete register values and symbolic register labels.
+- Use `symbolize_mem` only while paused to make a guest memory range symbolic.
+- Use `symbolize_reg` only while paused to make a guest register symbolic.
+
 ## Breakpoint Behavior
 
 - `run` is breakpoint-aware:

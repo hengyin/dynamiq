@@ -70,8 +70,9 @@ Dynamiq provides **two complementary interfaces** for analyzing target programs:
 7. `send_line` / `send_bytes` / `send_file` as needed.
 8. Repeat `run` -> `stdout` -> `stderr` -> `state`.
 9. Use `regs`, `bt`, `disasm`, `mem`, `maps`, `step`, `bb` for inspection.
-10. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
-10. `close` at end.
+10. Use `symbolize_mem` or `symbolize_reg` only when you intentionally want to inject symbolic state into the paused execution.
+11. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
+12. `close` at end.
 
 Trace file mode:
 - If live event streaming is unstable, set `start.qemu_config.instrumentation_trace_file_path` and use file-backed tracing via the same `trace_*` tools.
@@ -89,6 +90,9 @@ Trace file mode:
 - `send_bytes`: use `data` (text) or `data_hex` (raw bytes), not both.
 - `send_file`: stream bytes from local file to stdin.
 - `regs` / `bt` / `disasm` / `mem` / `maps`: low-level state inspection.
+- `regs` also carries symbolic register labels in `result.symbolic_registers` when supported.
+- `mem` also carries symbolic byte labels in `result.symbolic_bytes` when supported.
+- `symbolize_mem` / `symbolize_reg`: inject symbolic state into paused memory/registers.
 - `bt`: best-effort stack backtrace; use after breakpoints to quickly map call chains.
 - `trace_start` / `trace_stop` / `trace_status` / `trace_get`: trace tracing workflow and retrieval.
 - `qemu_config.instrumentation_trace_file_path`: optional trace spool file for deferred/offline trace retrieval.

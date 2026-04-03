@@ -157,9 +157,16 @@ PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 - `run`, `pause`
 - `send_bytes`, `send_line`, `send_file`, `stdout`, `stderr`
 - `regs`, `bt`, `disasm`, `mem`, `maps`, `syms`
+- `symbolize_mem`, `symbolize_reg`
 - `trace_start`, `trace_stop`, `trace_status`, `trace_get`
 - `step`, `bb`
 - `bp_add`, `bp_del`, `bp_list`, `bp_clear`
+
+`regs` and `mem` include symbolic metadata when the backend exposes it:
+- `regs.result.symbolic_registers`
+- `mem.result.symbolic_bytes`
+
+Use `symbolize_mem` and `symbolize_reg` to inject symbolic state into the current paused execution.
 
 ### MCP quickstart for interactive stdin/stdout
 
