@@ -173,9 +173,37 @@ class FakeInstrumentationRpcClient:
                 result["trace_kind"] = "basic_block"
             return result
         if method == "get_registers":
-            return {"registers": {"rax": "0x1", "rbx": "0x2", "rip": "0x401000"}}
+            return {
+                "registers": {"rax": "0x1", "rbx": "0x2", "rip": "0x401000"},
+                "symbolic_registers": {
+                    "rax": {"symbolic": False, "label": "0x0"},
+                    "rbx": {"symbolic": True, "label": "0x20"},
+                    "rip": {"symbolic": False, "label": "0x0"},
+                },
+            }
         if method == "read_memory":
-            return {"address": params["address"], "size": params["size"], "bytes": "0102"}
+            return {
+                "address": params["address"],
+                "size": params["size"],
+                "bytes": "0102",
+                "symbolic_bytes": [
+                    {"offset": 0, "symbolic": False, "label": "0x0"},
+                    {"offset": 1, "symbolic": True, "label": "0x44"},
+                ],
+            }
+        if method == "symbolize_memory":
+            return {
+                "address": params["address"],
+                "size": params["size"],
+                "bytes": [{"offset": 0, "symbolic": True, "label": "0x51"}],
+            }
+        if method == "symbolize_register":
+            return {
+                "register": params["register"],
+                "value": "0x1",
+                "symbolic": True,
+                "label": "0x52",
+            }
         if method == "disassemble":
             return {
                 "instructions": [
@@ -924,7 +952,15 @@ def test_backend_read_memory_uses_rpc_channel() -> None:
 
     result = backend.read_memory("0x401000", 2)
 
-    assert result["result"] == {"address": "0x401000", "size": 2, "bytes": "0102"}
+    assert result["result"] == {
+        "address": "0x401000",
+        "size": 2,
+        "bytes": "0102",
+        "symbolic_bytes": [
+            {"offset": 0, "label": "0x0", "symbolic": False},
+            {"offset": 1, "label": "0x44", "symbolic": True},
+        ],
+    }
     assert rpc.requests[0] == ("read_memory", {"address": "0x401000", "size": 2})
 
 

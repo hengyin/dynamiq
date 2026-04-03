@@ -8,23 +8,71 @@ from .events import normalize_address
 
 
 @dataclass(slots=True)
+class SymbolicByte:
+    offset: int
+    label: str
+    symbolic: bool
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SymbolicByte":
+        offset = payload.get("offset")
+        label = payload.get("label")
+        symbolic = payload.get("symbolic")
+        if not isinstance(offset, int):
+            raise EventValidationError("symbolic byte offset must be an integer")
+        if offset < 0:
+            raise EventValidationError("symbolic byte offset must be >= 0")
+        if not isinstance(label, str):
+            raise EventValidationError("symbolic byte label must be a string")
+        if not isinstance(symbolic, bool):
+            raise EventValidationError("symbolic byte symbolic flag must be a boolean")
+        return cls(offset=offset, label=label.lower() if label.startswith(("0x", "0X")) else label, symbolic=symbolic)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"offset": self.offset, "label": self.label, "symbolic": self.symbolic}
+
+
+@dataclass(slots=True)
 class RegisterSnapshot:
     registers: dict[str, str] = field(default_factory=dict)
+    symbolic_registers: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def from_rpc_result(cls, payload: dict[str, Any]) -> "RegisterSnapshot":
         raw_registers = payload.get("registers")
         if not isinstance(raw_registers, dict):
             raise EventValidationError("register RPC result must contain a registers object")
+        raw_symbolic = payload.get("symbolic_registers", {})
+        if raw_symbolic is None:
+            raw_symbolic = {}
+        if not isinstance(raw_symbolic, dict):
+            raise EventValidationError("register RPC symbolic_registers must be an object when present")
         normalized: dict[str, str] = {}
+        normalized_symbolic: dict[str, dict[str, Any]] = {}
         for name, value in raw_registers.items():
             if not isinstance(name, str) or not isinstance(value, str):
                 raise EventValidationError("register names and values must be strings")
             normalized[name] = value.lower() if value.startswith(("0x", "0X")) else value
-        return cls(registers=normalized)
+        for name, entry in raw_symbolic.items():
+            if not isinstance(name, str) or not isinstance(entry, dict):
+                raise EventValidationError("symbolic register entries must be keyed objects")
+            label = entry.get("label")
+            symbolic = entry.get("symbolic")
+            if not isinstance(label, str):
+                raise EventValidationError("symbolic register label must be a string")
+            if not isinstance(symbolic, bool):
+                raise EventValidationError("symbolic register symbolic flag must be a boolean")
+            normalized_symbolic[name] = {
+                "label": label.lower() if label.startswith(("0x", "0X")) else label,
+                "symbolic": symbolic,
+            }
+        return cls(registers=normalized, symbolic_registers=normalized_symbolic)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"registers": dict(self.registers)}
+        payload: dict[str, Any] = {"registers": dict(self.registers)}
+        if self.symbolic_registers:
+            payload["symbolic_registers"] = dict(self.symbolic_registers)
+        return payload
 
 
 @dataclass(slots=True)
@@ -100,12 +148,14 @@ class MemoryReadResult:
     address: str
     size: int
     bytes: str
+    symbolic_bytes: list[SymbolicByte] = field(default_factory=list)
 
     @classmethod
     def from_rpc_result(cls, payload: dict[str, Any]) -> "MemoryReadResult":
         address = normalize_address(payload.get("address"))
         size = payload.get("size")
         value = payload.get("bytes")
+        raw_symbolic = payload.get("symbolic_bytes", [])
         if not isinstance(size, int):
             raise EventValidationError("memory read RPC result size must be an integer")
         if size < 0 or size > 256:
@@ -114,11 +164,23 @@ class MemoryReadResult:
             raise EventValidationError("memory read RPC result bytes must be a hex string")
         if len(value) % 2 != 0:
             raise EventValidationError("memory read RPC result bytes must have even length")
-        return cls(address=address, size=size, bytes=value.lower())
+        if raw_symbolic is None:
+            raw_symbolic = []
+        if not isinstance(raw_symbolic, list):
+            raise EventValidationError("memory read RPC symbolic_bytes must be a list when present")
+        return cls(
+            address=address,
+            size=size,
+            bytes=value.lower(),
+            symbolic_bytes=[SymbolicByte.from_dict(item) for item in raw_symbolic],
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "address": self.address,
             "size": self.size,
             "bytes": self.bytes,
         }
+        if self.symbolic_bytes:
+            payload["symbolic_bytes"] = [item.to_dict() for item in self.symbolic_bytes]
+        return payload

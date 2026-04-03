@@ -133,6 +133,21 @@ copy_outputs() {
   run chmod 755 "${OUT_DIR}/qemu-i386-instrumented" "${OUT_DIR}/qemu-x86_64-instrumented"
 }
 
+resolve_existing_symfit_binary_dir() {
+  local candidate
+  for candidate in \
+    "${BUILD_DIR}/symfit-symsan" \
+    "${SYMFIT_SRC}/build/symfit-symsan" \
+    "${SYMFIT_SRC}/build/release/symfit-symsan"
+  do
+    if [[ -x "${candidate}/i386-linux-user/symfit-i386" && -x "${candidate}/x86_64-linux-user/symfit-x86_64" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 resolve_symsan_build_for_symfit() {
   if [[ -n "${SYMSAN_BUILD_OVERRIDE}" ]]; then
     printf '%s\n' "${SYMSAN_BUILD_OVERRIDE}"
@@ -175,6 +190,7 @@ if [[ "${SOURCE_KIND}" == "qemu" ]]; then
 else
   local_symfit_build_dir="${BUILD_DIR}"
   symsan_build_dir="$(resolve_symsan_build_for_symfit)"
+  existing_symfit_binary_dir=""
 
   if [[ ! -d "${SYMFIT_SRC}" ]]; then
     echo "SymFit source directory not found: ${SYMFIT_SRC}" >&2
@@ -189,11 +205,17 @@ else
     run rm -rf "${local_symfit_build_dir}"
   fi
 
-  run mkdir -p "${local_symfit_build_dir}"
-  run bash -lc "cd \"${SYMFIT_SRC}\" && BUILD_DIR=\"${local_symfit_build_dir}\" SYMSAN_BUILD=\"${symsan_build_dir}\" SYMFIT_TARGET_LIST=\"${TARGET_LIST}\" JOBS=\"${JOBS}\" ./build.sh symfit-symsan"
+  if existing_symfit_binary_dir="$(resolve_existing_symfit_binary_dir)"; then
+    echo "Reusing existing SymFit binaries from:"
+    echo "  ${existing_symfit_binary_dir}"
+  else
+    run mkdir -p "${local_symfit_build_dir}"
+    run bash -lc "cd \"${SYMFIT_SRC}\" && BUILD_DIR=\"${local_symfit_build_dir}\" SYMSAN_BUILD=\"${symsan_build_dir}\" SYMFIT_TARGET_LIST=\"${TARGET_LIST}\" JOBS=\"${JOBS}\" ./build.sh symfit-symsan"
+    existing_symfit_binary_dir="${local_symfit_build_dir}/symfit-symsan"
+  fi
   copy_outputs \
-    "${local_symfit_build_dir}/symfit-symsan/i386-linux-user/symfit-i386" \
-    "${local_symfit_build_dir}/symfit-symsan/x86_64-linux-user/symfit-x86_64"
+    "${existing_symfit_binary_dir}/i386-linux-user/symfit-i386" \
+    "${existing_symfit_binary_dir}/x86_64-linux-user/symfit-x86_64"
 fi
 
 echo "Built binaries:"

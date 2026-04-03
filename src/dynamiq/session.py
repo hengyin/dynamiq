@@ -296,6 +296,20 @@ class AnalysisSession:
             raise InvalidStateError(f"memory read exceeds max of {self.config.max_memory_read} bytes")
         return self._forward("read_memory", self.backend.read_memory(address, size))
 
+    def symbolize_memory(self, address: str, size: int, name: str | None = None) -> dict[str, Any]:
+        if size > self.config.max_memory_read:
+            raise InvalidStateError(f"memory symbolization exceeds max of {self.config.max_memory_read} bytes")
+        backend_method = getattr(self.backend, "symbolize_memory", None)
+        if not callable(backend_method):
+            raise UnsupportedOperationError("backend does not support memory symbolization")
+        return self._forward("symbolize_memory", backend_method(address=address, size=size, name=name))
+
+    def symbolize_register(self, register: str, name: str | None = None) -> dict[str, Any]:
+        backend_method = getattr(self.backend, "symbolize_register", None)
+        if not callable(backend_method):
+            raise UnsupportedOperationError("backend does not support register symbolization")
+        return self._forward("symbolize_register", backend_method(register=register, name=name))
+
     def disassemble(self, address: str, count: int = 16) -> dict[str, Any]:
         if count > self.config.max_disassembly_instructions:
             raise InvalidStateError(

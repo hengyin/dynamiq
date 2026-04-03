@@ -54,7 +54,14 @@ class FakeSession:
         return {"ok": True, "command": "pause", "result": {"timeout": timeout}}
 
     def get_registers(self, names=None):  # noqa: ANN001
-        return {"ok": True, "command": "get_registers", "result": {"registers": {"rip": "0x401000"}}}
+        return {
+            "ok": True,
+            "command": "get_registers",
+            "result": {
+                "registers": {"rip": "0x401000"},
+                "symbolic_registers": {"rip": {"symbolic": False, "label": "0x0"}},
+            },
+        }
 
     def backtrace(self, max_frames=16):  # noqa: ANN001
         return {
@@ -67,7 +74,30 @@ class FakeSession:
         return {"ok": True, "command": "disassemble", "result": {"instructions": [{"address": address, "size": count}]}}
 
     def read_memory(self, address, size):  # noqa: ANN001
-        return {"ok": True, "command": "read_memory", "result": {"address": address, "size": size, "bytes": "00"}}
+        return {
+            "ok": True,
+            "command": "read_memory",
+            "result": {
+                "address": address,
+                "size": size,
+                "bytes": "00",
+                "symbolic_bytes": [{"offset": 0, "label": "0x0", "symbolic": False}],
+            },
+        }
+
+    def symbolize_memory(self, address, size, name=None):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "symbolize_memory",
+            "result": {"address": address, "size": size, "name": name, "bytes": [{"offset": 0, "label": "0x41", "symbolic": True}]},
+        }
+
+    def symbolize_register(self, register, name=None):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "symbolize_register",
+            "result": {"register": register, "name": name, "label": "0x42", "symbolic": True},
+        }
 
     def list_memory_maps(self):
         return {"ok": True, "command": "list_memory_maps", "result": {"maps": {"regions": []}}}
@@ -178,6 +208,8 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "trace_stop" in names
     assert "trace_status" in names
     assert "trace_get" in names
+    assert "sym_mem_mark" in names
+    assert "sym_reg_mark" in names
     assert "bt" in names
     assert "bp_list" in names
     assert "stdin" not in names
@@ -203,6 +235,44 @@ def test_mcp_tool_call_start() -> None:
     result = response["result"]
     assert result["isError"] is False
     assert result["structuredContent"]["result"]["target"] == "/tmp/a.out"
+
+
+def test_mcp_tool_call_symbolize_memory() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": {
+                "name": "sym_mem_mark",
+                "arguments": {"address": "0x401000", "size": 4, "name": "buf"},
+            },
+        }
+    )
+    assert response is not None
+    result = response["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["result"]["address"] == "0x401000"
+
+
+def test_mcp_tool_call_symbolize_register() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": {
+                "name": "sym_reg_mark",
+                "arguments": {"register": "rax", "name": "acc"},
+            },
+        }
+    )
+    assert response is not None
+    result = response["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["result"]["register"] == "rax"
 
 
 def test_mcp_tool_call_start_rejects_empty_target() -> None:

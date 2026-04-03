@@ -127,3 +127,44 @@ def test_live_qemu_backend_rpc_trace_lifecycle(live_qemu_start_kwargs: dict[str,
         assert stopped["result"]["trace_file"] == trace_file
     finally:
         backend.close()
+
+
+@pytest.mark.live_qemu
+def test_live_qemu_backend_symbolize_register_and_memory(live_qemu_start_kwargs: dict[str, object]) -> None:
+    backend = QemuUserInstrumentedBackend()
+    backend.start(**live_qemu_start_kwargs)
+    try:
+        regs_before = backend.get_registers(["rax", "rsp"])
+        sym_regs_before = regs_before["result"]["symbolic_registers"]
+        rsp = regs_before["result"]["registers"]["rsp"]
+
+        mem_before = backend.read_memory(rsp, 8)
+        symbolic_before = mem_before["result"]["symbolic_bytes"]
+
+        assert sym_regs_before["rax"]["symbolic"] is False
+        assert sym_regs_before["rax"]["label"] == "0x0"
+        assert sym_regs_before["rsp"]["symbolic"] is False
+        assert all(entry["symbolic"] is False for entry in symbolic_before)
+
+        sym_mem = backend.symbolize_memory(rsp, 8, name="stack_probe")
+        sym_reg = backend.symbolize_register("rax", name="acc_probe")
+        regs_after = backend.get_registers(["rax"])
+        mem_after = backend.read_memory(rsp, 8)
+
+        assert sym_mem["result"]["address"] == rsp
+        assert sym_mem["result"]["size"] == 8
+        assert all(entry["symbolic"] is True for entry in sym_mem["result"]["bytes"])
+
+        assert sym_reg["result"]["register"] == "rax"
+        assert sym_reg["result"]["symbolic"] is True
+        assert sym_reg["result"]["label"] != "0x0"
+
+        rax_after = regs_after["result"]["symbolic_registers"]["rax"]
+        assert rax_after["symbolic"] is True
+        assert rax_after["label"] == sym_reg["result"]["label"]
+
+        symbolic_after = mem_after["result"]["symbolic_bytes"]
+        assert len(symbolic_after) == 8
+        assert all(entry["symbolic"] is True for entry in symbolic_after)
+    finally:
+        backend.close()

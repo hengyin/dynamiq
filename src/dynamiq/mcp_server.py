@@ -212,6 +212,26 @@ class InteractiveAnalysisMcpServer:
                         size=size,
                     )
                 )
+            if name == "sym_mem_mark":
+                address = self._parse_nonempty_string(arguments, "address")
+                size = self._parse_int(arguments, "size", required=True, minimum=1)
+                label_name = self._parse_optional_string(arguments, "name", default=None)
+                return self._tool_ok(
+                    self._ensure_session().symbolize_memory(
+                        address=address,
+                        size=size,
+                        name=label_name,
+                    )
+                )
+            if name == "sym_reg_mark":
+                register = self._parse_nonempty_string(arguments, "register")
+                label_name = self._parse_optional_string(arguments, "name", default=None)
+                return self._tool_ok(
+                    self._ensure_session().symbolize_register(
+                        register=register,
+                        name=label_name,
+                    )
+                )
             if name == "maps":
                 return self._tool_ok(self._ensure_session().list_memory_maps())
             if name == "step":
@@ -754,7 +774,7 @@ class InteractiveAnalysisMcpServer:
             ),
             ToolSpec(
                 name="mem",
-                description="Read guest memory bytes.",
+                description="Read guest memory bytes plus symbolic byte metadata when available.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -766,6 +786,33 @@ class InteractiveAnalysisMcpServer:
                         },
                     },
                     "required": ["address", "size"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="sym_mem_mark",
+                description="Mark a guest memory range symbolic in the current paused execution.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "address": {"type": "string", "description": "Guest virtual address (hex string)."},
+                        "size": {"type": "integer", "minimum": 1, "description": "Number of bytes to symbolize."},
+                        "name": {"type": ["string", "null"], "description": "Optional symbolic variable hint."},
+                    },
+                    "required": ["address", "size"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="sym_reg_mark",
+                description="Mark a guest register symbolic in the current paused execution.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "register": {"type": "string", "description": "Register name, for example rax or eax."},
+                        "name": {"type": ["string", "null"], "description": "Optional symbolic variable hint."},
+                    },
+                    "required": ["register"],
                     "additionalProperties": False,
                 },
             ),

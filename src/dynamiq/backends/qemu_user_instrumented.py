@@ -375,6 +375,20 @@ class QemuUserInstrumentedBackend:
         result = MemoryReadResult.from_rpc_result(self._rpc_request("read_memory", {"address": address, "size": size}))
         return self._response(result.to_dict())
 
+    def symbolize_memory(self, address: str, size: int, name: str | None = None) -> dict[str, Any]:
+        self._require_started()
+        params: dict[str, Any] = {"address": address, "size": size}
+        if name:
+            params["name"] = name
+        return self._response(self._rpc_request("symbolize_memory", params))
+
+    def symbolize_register(self, register: str, name: str | None = None) -> dict[str, Any]:
+        self._require_started()
+        params: dict[str, Any] = {"register": register}
+        if name:
+            params["name"] = name
+        return self._response(self._rpc_request("symbolize_register", params))
+
     def disassemble(self, address: str, count: int) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.disassemble:
