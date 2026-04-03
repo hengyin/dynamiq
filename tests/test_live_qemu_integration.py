@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -86,5 +87,44 @@ def test_live_qemu_backend_single_step(live_qemu_start_kwargs: dict[str, object]
         assert step["result"]["executed"] == 1
         assert step["result"]["pc"] == next_pc
         assert regs_after["result"]["registers"]["rip"] == next_pc
+    finally:
+        backend.close()
+
+
+@pytest.mark.live_qemu
+def test_live_qemu_backend_rpc_trace_lifecycle(live_qemu_start_kwargs: dict[str, object]) -> None:
+    backend = QemuUserInstrumentedBackend()
+    backend.start(**live_qemu_start_kwargs)
+    try:
+        caps = backend.capabilities()
+        assert caps["trace_basic_block"] is True
+
+        started = backend.trace_start(event_types=["basic_block"], address_ranges=None)
+        trace_file = started["result"]["trace_file"]
+        assert started["result"]["trace_active"] is True
+        assert started["result"]["trace_kind"] == "basic_block"
+        assert isinstance(trace_file, str) and trace_file != ""
+
+        status = backend.trace_status()
+        assert status["result"]["trace_active"] is True
+        assert status["result"]["trace_kind"] == "basic_block"
+        assert status["result"]["trace_file"] == trace_file
+
+        backend.step(1, timeout=5.0)
+
+        deadline = time.time() + 2.0
+        trace_entries: list[dict[str, object]] = []
+        while time.time() < deadline:
+            trace_entries = backend.get_trace(limit=32)["result"]["trace"]
+            if any(isinstance(item, dict) and item.get("type") == "basic_block" for item in trace_entries):
+                break
+            time.sleep(0.05)
+
+        assert any(isinstance(item, dict) and item.get("type") == "basic_block" for item in trace_entries)
+        assert Path(trace_file).exists()
+
+        stopped = backend.trace_stop()
+        assert stopped["result"]["trace_active"] is False
+        assert stopped["result"]["trace_file"] == trace_file
     finally:
         backend.close()

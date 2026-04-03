@@ -43,8 +43,10 @@ def test_live_qemu_stdin_roundtrip(tmp_path: Path) -> None:
     binary = _compile_stdin_echo_binary(tmp_path)
     backend = QemuUserInstrumentedBackend()
 
-    qemu_user_path = str(Path.home() / "git" / "qemu" / "build-ia" / "qemu-x86_64")
-    if not Path(qemu_user_path).exists():
+    local_qemu = Path(__file__).resolve().parents[1] / "tools" / "qemu" / "qemu-x86_64-instrumented"
+    if local_qemu.exists():
+        qemu_user_path = str(local_qemu)
+    else:
         discovered = shutil.which("qemu-x86_64")
         if discovered is None:
             pytest.skip("qemu-x86_64 not found")
@@ -79,4 +81,3 @@ def test_live_qemu_stdin_roundtrip(tmp_path: Path) -> None:
         assert "ECHO:ping" in seen
     finally:
         backend.close()
-
