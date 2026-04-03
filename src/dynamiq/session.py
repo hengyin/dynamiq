@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from .annotations import Annotation
 from .backends.base import BackendAdapter
-from .errors import InvalidStateError, UnsupportedOperationError
+from .errors import InvalidStateError, SessionTimeoutError, UnsupportedOperationError
 from .snapshot import Snapshot
 from .state import ExecutionState
 
@@ -194,12 +195,49 @@ class AnalysisSession:
             payload = dict(result.get("result", {}))
             payload.update({"mode": "continue", "completed": False, "stop_reason": "breakpoint"})
             return self._response("advance", payload)
-        result = self._forward("advance", self.backend.resume(timeout))
-        payload = dict(result.get("result", {}))
-        payload.setdefault("mode", "continue")
-        payload.setdefault("completed", False)
-        payload.setdefault("stop_reason", self._infer_stop_reason(payload, None, completed=False))
-        return self._response("advance", payload)
+
+        stdout_cursor = self._stream_cursor("stdout")
+        stderr_cursor = self._stream_cursor("stderr")
+        self._forward("advance", self.backend.resume(timeout))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            state_payload = self.backend.get_state()
+            self._merge_state(state_payload)
+
+            stdout_probe = self.backend.read_stdout(cursor=stdout_cursor, max_chars=1)
+            stderr_probe = self.backend.read_stderr(cursor=stderr_cursor, max_chars=1)
+            stdout_data = stdout_probe.get("result", {}).get("data", "")
+            stderr_data = stderr_probe.get("result", {}).get("data", "")
+            if stdout_data or stderr_data:
+                if self.state.session_status == "running":
+                    pause_result = self._forward("pause", self.backend.pause(timeout=min(1.0, max(0.1, deadline - time.time()))))
+                    result = dict(pause_result.get("result", {}))
+                else:
+                    result = {}
+                result.update(
+                    {
+                        "mode": "continue",
+                        "completed": False,
+                        "stop_reason": "io",
+                        "stdout_ready": bool(stdout_data),
+                        "stderr_ready": bool(stderr_data),
+                    }
+                )
+                if isinstance(self.state.pc, str):
+                    result.setdefault("pc", self.state.pc)
+                return self._response("advance", result)
+
+            if self.state.session_status in {"paused", "idle", "exited", "closed"}:
+                result = {
+                    "mode": "continue",
+                    "completed": False,
+                    "stop_reason": self._infer_stop_reason({}, self._read_live_pc(), completed=False),
+                }
+                if isinstance(self.state.pc, str):
+                    result["pc"] = self.state.pc
+                return self._response("advance", result)
+            time.sleep(0.05)
+        raise SessionTimeoutError("timed out waiting for advance continue condition")
 
     def _advance_counted(self, mode: str, count: int, timeout: float) -> dict[str, Any]:
         current_pc = self._read_live_pc()
@@ -333,9 +371,23 @@ class AnalysisSession:
             status = payload.get("status")
             if status == "exited":
                 return "exited"
+        if self.state.session_status == "exited":
+            return "exited"
         if completed:
             return "target_reached"
         return "paused"
+
+    def _stream_cursor(self, stream_name: str) -> int:
+        backend_method = getattr(self.backend, f"read_{stream_name}", None)
+        if not callable(backend_method):
+            return 0
+        try:
+            payload = backend_method(cursor=0, max_chars=1 << 20)
+        except Exception:
+            return 0
+        result = payload.get("result", {}) if isinstance(payload, dict) else {}
+        cursor = result.get("cursor")
+        return int(cursor) if isinstance(cursor, int) and cursor >= 0 else 0
 
     def _read_live_pc(self) -> int | None:
         live_pc: int | None = None

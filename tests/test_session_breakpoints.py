@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from dynamiq.errors import InvalidStateError
+from dynamiq.errors import InvalidStateError, SessionTimeoutError
 from dynamiq.session import AnalysisSession
 
 
@@ -125,6 +125,59 @@ class FakeBackendNoRegisterReads(FakeBackend):
     def get_registers(self, names=None):  # noqa: ANN001
         del names
         raise RuntimeError("unsupported_arch: get_registers is only implemented for x86_64")
+
+class FakeBackendContinueIo(FakeBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stdout_reads = 0
+        self.running = False
+
+    def resume(self, timeout):  # noqa: ANN001
+        del timeout
+        self.running = True
+        return {"state": {"session_status": "running"}, "result": {}}
+
+    def pause(self, timeout):  # noqa: ANN001
+        del timeout
+        self.pause_calls += 1
+        self.running = False
+        return {"state": {"session_status": "paused"}, "result": {}}
+
+    def get_state(self):
+        status = "running" if self.running else "paused"
+        return {"session_status": status, "pc": self.pc_seq[self.idx], "capabilities": self.capabilities()}
+
+    def read_stdout(self, cursor=0, max_chars=4096):  # noqa: ANN001
+        del max_chars
+        self.stdout_reads += 1
+        if cursor == 0:
+            return {"state": {}, "result": {"data": "", "cursor": 1, "eof": False}}
+        if self.stdout_reads >= 2:
+            return {"state": {}, "result": {"data": ">", "cursor": cursor + 1, "eof": False}}
+        return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
+
+
+class FakeBackendContinueTimeout(FakeBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.running = False
+
+    def resume(self, timeout):  # noqa: ANN001
+        del timeout
+        self.running = True
+        return {"state": {"session_status": "running"}, "result": {}}
+
+    def get_state(self):
+        status = "running" if self.running else "paused"
+        return {"session_status": status, "pc": self.pc_seq[self.idx], "capabilities": self.capabilities()}
+
+    def read_stdout(self, cursor=0, max_chars=4096):  # noqa: ANN001
+        del max_chars
+        return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
+
+    def read_stderr(self, cursor=0, max_chars=4096):  # noqa: ANN001
+        del max_chars
+        return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
 
 
 def test_session_bp_run_multiple_breakpoints_selects_nearest_forward() -> None:
@@ -266,3 +319,25 @@ def test_session_advance_rejects_invalid_mode() -> None:
     session = AnalysisSession(backend=FakeBackend())
     with pytest.raises(InvalidStateError, match="advance mode"):
         session.advance(mode="weird", timeout=1.0)
+
+
+def test_session_advance_continue_pauses_on_io() -> None:
+    backend = FakeBackendContinueIo()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+
+    result = session.advance(mode="continue", timeout=1.0)
+
+    assert result["result"]["mode"] == "continue"
+    assert result["result"]["stop_reason"] == "io"
+    assert result["result"]["stdout_ready"] is True
+    assert backend.pause_calls == 1
+
+
+def test_session_advance_continue_times_out_non_fatally() -> None:
+    backend = FakeBackendContinueTimeout()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+
+    with pytest.raises(SessionTimeoutError, match="advance continue"):
+        session.advance(mode="continue", timeout=0.1)
