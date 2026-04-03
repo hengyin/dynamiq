@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = ROOT / "examples"
 TARGET_SRC = EXAMPLES / "sample_target.c"
 TARGET_BIN = EXAMPLES / "sample_target"
-DEFAULT_QEMU = Path.home() / "git" / "qemu" / "build-ia" / "qemu-x86_64"
 
 
 def compile_target() -> None:
@@ -28,14 +27,16 @@ def compile_target() -> None:
 
 
 def resolve_qemu() -> str:
-    env_path = Path.cwd() / "qemu-x86_64"
-    override = Path(str(DEFAULT_QEMU))
-    if override.exists():
-        return str(override)
+    local_cache = ROOT / "tools" / "qemu" / "qemu-x86_64-instrumented"
+    if local_cache.exists():
+        return str(local_cache)
     qemu = shutil.which("qemu-x86_64")
     if qemu is not None:
         return qemu
-    raise SystemExit("qemu-x86_64 not found; set up /home/heng/git/qemu/build-ia/qemu-x86_64 or install qemu-user")
+    raise SystemExit(
+        "qemu-x86_64 not found; populate tools/qemu with "
+        "./scripts/build_qemu_toolchain.sh or install qemu-user"
+    )
 
 
 def wait_for_socket(path: Path, timeout: float = 5.0) -> None:

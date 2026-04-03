@@ -63,8 +63,8 @@ Before real QEMU work begins, freeze the initial protocol contract.
 
 Contract documents:
 
-- [design.md](/home/heng/git/InteractiveGDB/design.md)
-- [docs/live_backend_contract.md](/home/heng/git/InteractiveGDB/docs/live_backend_contract.md)
+- [design.md](../design.md)
+- [docs/live_backend_contract.md](./live_backend_contract.md)
 
 Freeze these items for v0:
 

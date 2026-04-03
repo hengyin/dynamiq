@@ -30,55 +30,46 @@ def test_qemu_user_launch_config_builds_command_and_env() -> None:
 
 
 def test_qemu_user_launch_config_prefers_local_build_when_available(monkeypatch, tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    preferred = home / "git" / "qemu" / "build-ia" / "qemu-x86_64"
+    repo_root = tmp_path / "repo"
+    preferred = repo_root / "tools" / "qemu" / "qemu-x86_64-instrumented"
     preferred.parent.mkdir(parents=True)
     preferred.write_text("", encoding="utf-8")
 
-    monkeypatch.setattr("dynamiq.qemu_user.Path.home", lambda: home)
+    monkeypatch.setattr("dynamiq.qemu_user.Path.resolve", lambda self: repo_root / "src" / "dynamiq" / "qemu_user.py")
     monkeypatch.setattr("dynamiq.qemu_user.shutil.which", lambda _name: "/usr/bin/qemu-x86_64")
 
     config = QemuUserLaunchConfig.from_target(target="./bin/sample", qemu_config={})
 
-    qemu_name = Path(config.qemu_user_path).name
-    assert qemu_name in {"qemu-x86_64", "qemu-x86_64-instrumented"}
+    assert config.qemu_user_path == str(preferred)
 
 
 def test_qemu_user_launch_config_selects_i386_for_32bit_elf(monkeypatch, tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home_preferred = home / "git" / "qemu" / "build-ia" / "qemu-i386"
-    home_preferred.parent.mkdir(parents=True)
-    home_preferred.write_text("", encoding="utf-8")
+    repo_root = tmp_path / "repo"
+    preferred = repo_root / "tools" / "qemu" / "qemu-i386-instrumented"
+    preferred.parent.mkdir(parents=True)
+    preferred.write_text("", encoding="utf-8")
 
     target = tmp_path / "sample-32"
     # ELF32 + little-endian + ET_EXEC + EM_386
     target.write_bytes(b"\x7fELF\x01\x01\x01" + b"\x00" * 9 + b"\x02\x00\x03\x00")
 
-    monkeypatch.setattr("dynamiq.qemu_user.Path.home", lambda: home)
+    monkeypatch.setattr("dynamiq.qemu_user.Path.resolve", lambda self: repo_root / "src" / "dynamiq" / "qemu_user.py")
     monkeypatch.setattr("dynamiq.qemu_user.shutil.which", lambda _name: None)
 
     config = QemuUserLaunchConfig.from_target(target=str(target), qemu_config={})
 
-    qemu_name = Path(config.qemu_user_path).name
-    assert qemu_name in {"qemu-i386", "qemu-i386-instrumented"}
+    assert config.qemu_user_path == str(preferred)
 
 
 def test_qemu_user_launch_config_falls_back_to_x86_64_when_arch_unknown(monkeypatch, tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    preferred = home / "git" / "qemu" / "build-ia" / "qemu-x86_64"
-    preferred.parent.mkdir(parents=True)
-    preferred.write_text("", encoding="utf-8")
-
     target = tmp_path / "not-elf"
     target.write_text("plain text", encoding="utf-8")
 
-    monkeypatch.setattr("dynamiq.qemu_user.Path.home", lambda: home)
     monkeypatch.setattr("dynamiq.qemu_user.shutil.which", lambda _name: None)
 
     config = QemuUserLaunchConfig.from_target(target=str(target), qemu_config={})
 
-    qemu_name = Path(config.qemu_user_path).name
-    assert qemu_name in {"qemu-x86_64", "qemu-x86_64-instrumented"}
+    assert config.qemu_user_path == "qemu-x86_64"
 
 
 def test_qemu_user_launch_config_honors_explicit_qemu_path(monkeypatch, tmp_path: Path) -> None:
@@ -97,17 +88,13 @@ def test_qemu_user_launch_config_honors_explicit_qemu_path(monkeypatch, tmp_path
 
 def test_resolve_qemu_prefers_repo_tools_qemu_folder(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
-    home = tmp_path / "home"
     preferred = repo_root / "tools" / "qemu" / "qemu-i386-instrumented"
-    fallback = home / "git" / "qemu" / "build-ia" / "qemu-i386"
     preferred.parent.mkdir(parents=True)
-    fallback.parent.mkdir(parents=True)
     preferred.write_text("", encoding="utf-8")
-    fallback.write_text("", encoding="utf-8")
 
     monkeypatch.setattr("dynamiq.qemu_user.shutil.which", lambda _name: None)
 
-    resolved = _resolve_qemu_from_candidates(["qemu-i386"], repo_root=repo_root, home=home)
+    resolved = _resolve_qemu_from_candidates(["qemu-i386"], repo_root=repo_root)
 
     assert resolved == str(preferred)
 

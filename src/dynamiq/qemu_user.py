@@ -37,12 +37,11 @@ def _detect_elf_machine(target: str) -> int | None:
     return int.from_bytes(header[18:20], byteorder=byteorder, signed=False)
 
 
-def _resolve_qemu_from_candidates(binary_names: list[str], repo_root: Path, home: Path) -> str:
+def _resolve_qemu_from_candidates(binary_names: list[str], repo_root: Path) -> str:
     for binary_name in binary_names:
         candidates = [
             repo_root / "tools" / "qemu" / f"{binary_name}-instrumented",
             repo_root / "tools" / "qemu" / binary_name,
-            home / "git" / "qemu" / "build-ia" / binary_name,
         ]
         for candidate in candidates:
             if candidate.exists():
@@ -57,13 +56,12 @@ def resolve_qemu_user_path(qemu_config: dict[str, Any], target: str) -> str:
     configured = qemu_config.get("qemu_user_path")
     if configured:
         return str(configured)
-    home = Path.home()
     repo_root = Path(__file__).resolve().parents[2]
     machine = _detect_elf_machine(target)
     preferred_binary = _ELF_MACHINE_TO_QEMU_USER.get(machine)
     binary_names = [preferred_binary] if preferred_binary is not None else []
     binary_names.append("qemu-x86_64")
-    return _resolve_qemu_from_candidates(binary_names, repo_root=repo_root, home=home)
+    return _resolve_qemu_from_candidates(binary_names, repo_root=repo_root)
 
 
 @dataclass(slots=True)

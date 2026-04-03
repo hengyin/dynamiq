@@ -10,6 +10,7 @@ SYMFIT_SRC="${HOME}/git/symfit"
 BUILD_DIR="/tmp/qemu-build-ia"
 OUT_DIR="${REPO_ROOT}/tools/qemu"
 TARGET_LIST="i386-linux-user,x86_64-linux-user"
+SYMSAN_BUILD_OVERRIDE=""
 JOBS="$(command -v nproc >/dev/null 2>&1 && nproc || echo 4)"
 CLEAN=0
 DRY_RUN=0
@@ -24,6 +25,7 @@ Usage:
 Options:
   --source-kind <kind>   Source type: symfit or qemu (default: symfit)
   --symfit-src <path>    SymFit source tree (default: ~/git/symfit)
+  --symsan-build <path>  Existing SymSan build/prefix to reuse for SymFit builds
   --qemu-src <path>      QEMU source tree (default: ~/git/qemu)
   --build-dir <path>     Build directory (default: /tmp/qemu-build-ia)
   --out-dir <path>       Output directory (default: ./tools/qemu)
@@ -60,6 +62,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --symfit-src)
       SYMFIT_SRC="$2"
+      shift 2
+      ;;
+    --symsan-build)
+      SYMSAN_BUILD_OVERRIDE="$2"
       shift 2
       ;;
     --qemu-src)
@@ -127,6 +133,25 @@ copy_outputs() {
   run chmod 755 "${OUT_DIR}/qemu-i386-instrumented" "${OUT_DIR}/qemu-x86_64-instrumented"
 }
 
+resolve_symsan_build_for_symfit() {
+  if [[ -n "${SYMSAN_BUILD_OVERRIDE}" ]]; then
+    printf '%s\n' "${SYMSAN_BUILD_OVERRIDE}"
+    return 0
+  fi
+
+  if [[ -d "${SYMFIT_SRC}/build/symsan" ]]; then
+    printf '%s\n' "${SYMFIT_SRC}/build/symsan"
+    return 0
+  fi
+
+  if [[ -d "${SYMFIT_SRC}/build/release/symsan" ]]; then
+    printf '%s\n' "${SYMFIT_SRC}/build/release/symsan"
+    return 0
+  fi
+
+  printf '%s\n' "${BUILD_DIR}/symsan"
+}
+
 if [[ "${SOURCE_KIND}" == "qemu" ]]; then
   if [[ ! -d "${QEMU_SRC}" ]]; then
     echo "QEMU source directory not found: ${QEMU_SRC}" >&2
@@ -149,6 +174,7 @@ if [[ "${SOURCE_KIND}" == "qemu" ]]; then
   copy_outputs "${BUILD_DIR}/qemu-i386" "${BUILD_DIR}/qemu-x86_64"
 else
   local_symfit_build_dir="${BUILD_DIR}"
+  symsan_build_dir="$(resolve_symsan_build_for_symfit)"
 
   if [[ ! -d "${SYMFIT_SRC}" ]]; then
     echo "SymFit source directory not found: ${SYMFIT_SRC}" >&2
@@ -164,7 +190,7 @@ else
   fi
 
   run mkdir -p "${local_symfit_build_dir}"
-  run bash -lc "cd \"${SYMFIT_SRC}\" && BUILD_DIR=\"${local_symfit_build_dir}\" SYMFIT_TARGET_LIST=\"${TARGET_LIST}\" JOBS=\"${JOBS}\" ./build.sh symfit-symsan"
+  run bash -lc "cd \"${SYMFIT_SRC}\" && BUILD_DIR=\"${local_symfit_build_dir}\" SYMSAN_BUILD=\"${symsan_build_dir}\" SYMFIT_TARGET_LIST=\"${TARGET_LIST}\" JOBS=\"${JOBS}\" ./build.sh symfit-symsan"
   copy_outputs \
     "${local_symfit_build_dir}/symfit-symsan/i386-linux-user/symfit-i386" \
     "${local_symfit_build_dir}/symfit-symsan/x86_64-linux-user/symfit-x86_64"

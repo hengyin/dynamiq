@@ -50,8 +50,7 @@ def _compile_breakpoint_stress_binary(workdir: Path) -> Path:
 
 def _resolve_x86_64_qemu() -> str:
     candidates = [
-        Path("/home/heng/git/dynamiq/tools/qemu/qemu-x86_64-instrumented"),
-        Path.home() / "git" / "qemu" / "build-ia" / "qemu-x86_64",
+        Path(__file__).resolve().parents[1] / "tools" / "qemu" / "qemu-x86_64-instrumented",
     ]
     for candidate in candidates:
         if candidate.exists():

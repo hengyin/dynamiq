@@ -45,9 +45,10 @@ Common overrides:
 
 ```bash
 ./scripts/build_qemu_toolchain.sh \
-  --symfit-src /home/heng/git/symfit \
+  --symfit-src /path/to/symfit \
+  --symsan-build /path/to/symfit/build/symsan \
   --build-dir /tmp/symfit-build-ia \
-  --out-dir /home/heng/git/dynamiq/tools/qemu \
+  --out-dir /path/to/dynamiq/tools/qemu \
   --clean
 ```
 
@@ -56,7 +57,7 @@ If you still want the legacy upstream-QEMU flow, use:
 ```bash
 ./scripts/build_qemu_toolchain.sh \
   --source-kind qemu \
-  --qemu-src /home/heng/git/qemu \
+  --qemu-src /path/to/qemu \
   --build-dir /tmp/qemu-build-ia \
   --clean
 ```
@@ -118,7 +119,8 @@ This demo will:
 PYTHONPATH=src .venv/bin/python examples/demo_qemu_rpc_m1.py
 ```
 
-This path expects a locally built QEMU binary at `/home/heng/git/qemu/build-ia/qemu-x86_64` and exercises:
+This path expects an IA/RPC-capable runtime binary, typically from dynamiq's
+local `tools/qemu/` cache, and exercises:
 
 1. `query_status`
 2. `get_registers`
@@ -173,8 +175,8 @@ Example `tools/call` arguments:
 - `start`
 ```json
 {
-  "target": "/home/heng/work2/KPRCA_00021",
-  "cwd": "/home/heng/work2"
+  "target": "/path/to/target_binary",
+  "cwd": "/path/to/workdir"
 }
 ```
 
