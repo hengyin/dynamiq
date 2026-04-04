@@ -73,6 +73,30 @@ class FakeBackend:
     def list_memory_maps(self):
         return {"state": {}, "result": {}}
 
+    def recent_path_constraints(self, limit=16):  # noqa: ANN001
+        count = min(limit, 2)
+        return {
+            "state": {},
+            "result": {
+                "constraints": [
+                    {"label": "0x12", "pc": "0x1008", "taken": True, "op": "ICmp"},
+                    {"label": "0x6", "pc": "0x1004", "taken": True, "op": "ICmp"},
+                ][:count],
+                "count": count,
+                "truncated": False,
+            },
+        }
+
+    def path_constraint_closure(self, label):  # noqa: ANN001
+        return {
+            "state": {},
+            "result": {
+                "root": {"label": label, "op": "ICmp"},
+                "constraints": [{"label": "0x6", "op": "ICmp"}],
+                "count": 1,
+            },
+        }
+
     def take_snapshot(self, name=None):  # noqa: ANN001
         del name
         return {"state": {}, "result": {}}
@@ -487,3 +511,25 @@ def test_session_advance_continue_times_out_non_fatally() -> None:
 
     with pytest.raises(SessionTimeoutError, match="advance continue"):
         session.advance(mode="continue", timeout=0.1)
+
+
+def test_session_recent_path_constraints_forwards_backend_result() -> None:
+    session = AnalysisSession(backend=FakeBackend())
+    session.start("target.bin")
+
+    result = session.recent_path_constraints(limit=4)
+
+    assert result["command"] == "recent_path_constraints"
+    assert result["result"]["count"] == 2
+    assert result["result"]["constraints"][0]["label"] == "0x12"
+
+
+def test_session_path_constraint_closure_forwards_backend_result() -> None:
+    session = AnalysisSession(backend=FakeBackend())
+    session.start("target.bin")
+
+    result = session.path_constraint_closure("0x12")
+
+    assert result["command"] == "path_constraint_closure"
+    assert result["result"]["root"]["label"] == "0x12"
+    assert result["result"]["constraints"][0]["label"] == "0x6"

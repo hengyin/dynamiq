@@ -573,6 +573,18 @@ class AnalysisSession:
             raise UnsupportedOperationError("backend does not support symbolic expression lookup")
         return self._forward("get_symbolic_expression", backend_method(label=label))
 
+    def recent_path_constraints(self, limit: int = 16) -> dict[str, Any]:
+        backend_method = getattr(self.backend, "recent_path_constraints", None)
+        if not callable(backend_method):
+            raise UnsupportedOperationError("backend does not support recent path-constraint lookup")
+        return self._forward("recent_path_constraints", backend_method(limit=limit))
+
+    def path_constraint_closure(self, label: str) -> dict[str, Any]:
+        backend_method = getattr(self.backend, "path_constraint_closure", None)
+        if not callable(backend_method):
+            raise UnsupportedOperationError("backend does not support path-constraint closure lookup")
+        return self._forward("path_constraint_closure", backend_method(label=label))
+
     def disassemble(self, address: str, count: int = 16) -> dict[str, Any]:
         if count > self.config.max_disassembly_instructions:
             raise InvalidStateError(

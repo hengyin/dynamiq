@@ -393,6 +393,14 @@ class QemuUserInstrumentedBackend:
         self._require_started()
         return self._response(self._rpc_request("get_symbolic_expression", {"label": label}))
 
+    def recent_path_constraints(self, limit: int = 16) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("get_recent_path_constraints", {"limit": limit}))
+
+    def path_constraint_closure(self, label: str) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("get_path_constraints", {"label": label}))
+
     def disassemble(self, address: str, count: int) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.disassemble:

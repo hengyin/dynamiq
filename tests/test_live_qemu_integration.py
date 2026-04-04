@@ -1,11 +1,40 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
 from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+
+
+def _lookup_symbol(path: Path, symbol: str) -> str:
+    proc = subprocess.run(
+        ["nm", "-n", str(path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == symbol:
+            return "0x" + parts[0].lower()
+    raise AssertionError(f"missing symbol {symbol} in {path}")
+
+
+def _distinct_labels(constraints: list[dict[str, object]]) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for entry in constraints:
+        label = str(entry["label"]).lower()
+        if label in seen:
+            continue
+        seen.add(label)
+        labels.append(str(entry["label"]))
+    return labels
 
 
 @pytest.mark.live_qemu
@@ -184,5 +213,57 @@ def test_live_qemu_backend_symbolize_register_and_memory(live_qemu_start_kwargs:
         symbolic_after = mem_after["result"]["symbolic_bytes"]
         assert len(symbolic_after) == 8
         assert all(entry["symbolic"] is True for entry in symbolic_after)
+    finally:
+        backend.close()
+
+
+@pytest.mark.live_qemu
+def test_live_qemu_backend_path_constraint_queries() -> None:
+    target = Path("/home/heng/git/symfit/tests/symfit/interactive/path_constraints_target")
+    rpc_socket = Path("/tmp/dynamiq-live-path-constraints.sock")
+    qemu_user_path = Path(
+        os.environ.get(
+            "IA_LIVE_QEMU_USER_PATH",
+            "/home/heng/git/dynamiq/tools/qemu/qemu-x86_64-instrumented",
+        )
+    )
+    if not target.exists():
+        pytest.skip(f"path-constraint target does not exist: {target}")
+    if not qemu_user_path.exists():
+        pytest.skip(f"instrumented qemu user binary does not exist: {qemu_user_path}")
+
+    backend = QemuUserInstrumentedBackend()
+    backend.start(
+        target=str(target),
+        args=[],
+        cwd=None,
+        qemu_config={
+            "launch": True,
+            "qemu_user_path": str(qemu_user_path),
+            "target": str(target),
+            "target_args": [],
+            "instrumentation_rpc_socket_path": str(rpc_socket),
+        },
+    )
+    try:
+        data_addr = _lookup_symbol(target, "data_byte")
+        branch2_taken_addr = _lookup_symbol(target, "branch2_taken")
+
+        sym = backend.symbolize_memory(data_addr, 1, name="path_seed")
+        stop = backend.run_until_address(branch2_taken_addr, timeout=5.0)
+        recent = backend.recent_path_constraints(limit=4)
+        labels = _distinct_labels(recent["result"]["constraints"])
+        assert sym["result"]["bytes"][0]["symbolic"] is True
+        assert stop["result"]["matched"] is True
+        assert len(labels) >= 2
+
+        closure = backend.path_constraint_closure(labels[0])
+
+        assert recent["result"]["count"] >= 2
+        assert recent["result"]["constraints"][0]["op"] == "ICmp"
+        assert closure["result"]["root"]["label"].lower() == labels[0].lower()
+        assert labels[1].lower() in {
+            str(entry["label"]).lower() for entry in closure["result"]["constraints"]
+        }
     finally:
         backend.close()

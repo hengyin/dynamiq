@@ -215,6 +215,47 @@ class FakeInstrumentationRpcClient:
                 "op1": 34,
                 "op2": 0,
             }
+        if method == "get_recent_path_constraints":
+            return {
+                "constraints": [
+                    {
+                        "label": "0x12",
+                        "pc": "0x401020",
+                        "taken": True,
+                        "expression": "ICmp[eq]:bool(input(0):i8, 0x42:i8)",
+                        "op": "ICmp",
+                        "size": 1,
+                    },
+                    {
+                        "label": "0x6",
+                        "pc": "0x401010",
+                        "taken": True,
+                        "expression": "ICmp[eq]:bool(input(0):i8, 0x41:i8)",
+                        "op": "ICmp",
+                        "size": 1,
+                    },
+                ],
+                "count": 2,
+                "truncated": False,
+            }
+        if method == "get_path_constraints":
+            return {
+                "root": {
+                    "label": params["label"],
+                    "expression": "ICmp[eq]:bool(input(0):i8, 0x42:i8)",
+                    "op": "ICmp",
+                    "size": 1,
+                },
+                "constraints": [
+                    {
+                        "label": "0x6",
+                        "expression": "ICmp[eq]:bool(input(0):i8, 0x41:i8)",
+                        "op": "ICmp",
+                        "size": 1,
+                    }
+                ],
+                "count": 1,
+            }
         if method == "disassemble":
             return {
                 "instructions": [
@@ -967,6 +1008,41 @@ def test_backend_get_symbolic_expression_uses_rpc_channel() -> None:
     assert result["result"]["op"] == "Xor"
     assert "Add:i64" in result["result"]["expression"]
     assert rpc.requests[0] == ("get_symbolic_expression", {"label": "0x3"})
+
+
+def test_backend_recent_path_constraints_uses_rpc_channel() -> None:
+    instrumentation = FakeInstrumentationClient()
+    rpc = FakeInstrumentationRpcClient(instrumentation)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=FakeQmpClient(),
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+
+    result = backend.recent_path_constraints(limit=4)
+
+    assert result["result"]["count"] == 2
+    assert result["result"]["constraints"][0]["label"] == "0x12"
+    assert result["result"]["constraints"][0]["taken"] is True
+    assert rpc.requests[0] == ("get_recent_path_constraints", {"limit": 4})
+
+
+def test_backend_path_constraint_closure_uses_rpc_channel() -> None:
+    instrumentation = FakeInstrumentationClient()
+    rpc = FakeInstrumentationRpcClient(instrumentation)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=FakeQmpClient(),
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+
+    result = backend.path_constraint_closure("0x12")
+
+    assert result["result"]["root"]["label"] == "0x12"
+    assert result["result"]["constraints"][0]["label"] == "0x6"
+    assert rpc.requests[0] == ("get_path_constraints", {"label": "0x12"})
 
 
 def test_backend_read_memory_uses_rpc_channel() -> None:
