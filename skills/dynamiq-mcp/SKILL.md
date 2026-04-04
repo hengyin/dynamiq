@@ -39,21 +39,25 @@ Dynamiq provides **two complementary interfaces** for analyzing target programs:
 1. Never guess runtime addresses.
 - Always call `syms` in the current session and use `symbols[].loaded_address` for `bp_add`.
 
-2. Always close the run/input/output loop.
+2. Do not choose the runtime binary.
+- Runtime selection is environment-controlled by the MCP server launcher.
+- Do not ask the model to choose or override the qemu-user binary.
+
+3. Always close the run/input/output loop.
 - After each `advance` with `mode="continue"`, call `stdout`, `stderr`, and usually `state`.
 - After each `send_line`, `send_bytes`, or `send_file`, call `advance {"mode":"continue"}` again, then poll `stdout`/`stderr`.
 
-3. Treat elapsed run windows as non-fatal.
+4. Treat elapsed run windows as non-fatal.
 - An `advance` result with `reason=window_elapsed` is not a failure.
 - Mandatory sequence after `window_elapsed`: `stdout` -> `stderr` -> `state`.
 - Do not close/restart solely because the advance window elapsed.
 
-4. Use the correct stdin tool.
+5. Use the correct stdin tool.
 - `send_line` for menu/prompt interactions.
 - `send_bytes` for exact text/byte payloads.
 - `send_file` for large payloads.
 
-5. Prefer targeted breakpoint workflows for complex interactive binaries.
+6. Prefer targeted breakpoint workflows for complex interactive binaries.
 - Avoid long free-form interaction when trying to confirm a specific bug.
 - Set breakpoints on likely handlers/parsers first, then drive minimal input to hit them.
 - Use `regs`/`disasm`/`mem` at breakpoints to verify conditions and memory effects.
@@ -70,10 +74,27 @@ Dynamiq provides **two complementary interfaces** for analyzing target programs:
 7. `send_line` / `send_bytes` / `send_file` as needed.
 8. Repeat `advance {"mode":"continue"}` -> `stdout` -> `stderr` -> `state`.
 9. Use `regs`, `bt`, `disasm`, `mem`, `maps`, and `advance` for motion/inspection.
-10. Use `symbolize_mem` or `symbolize_reg` only when you intentionally want to inject symbolic state into the paused execution.
-11. After finding a non-zero symbolic label in `regs` or `mem`, use `expr` to inspect the symbolic expression for that label.
-12. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
-13. `close` at end.
+10. Do not assume stdin, argv, stack buffers, or heap buffers become symbolic automatically. They are concrete unless you explicitly symbolize them.
+11. To symbolize an input buffer, first stop at a point where the target has already copied or parsed the input into a concrete memory region, then locate that region with `regs`, `bt`, `mem`, `maps`, or breakpoints on parser/handler code.
+12. For `read` / `fgets` / similar stdin-oriented input routines, first send input with `send_line`, `send_bytes`, or `send_file`, then use breakpoints and `advance` so you pause after the function returns, when the destination buffer has been filled.
+13. Once the buffer address and size are known, call `symbolize_mem {"address":"...", "size":N, "name":"..."}` while paused. Use `symbolize_reg` only when the symbolic source should be a register value rather than memory.
+14. Immediately verify the result with `mem` or `regs`. Expect symbolic metadata in `mem.result.symbolic_bytes` or `regs.result.symbolic_registers`. If those labels are still zero/concrete, you symbolized the wrong location or did it at the wrong time.
+15. After finding a non-zero symbolic label in `regs` or `mem`, use `expr` to inspect the symbolic expression for that label.
+16. For path-constraint reasoning in the scripting API, first call `recent_path_constraints(limit=...)`, then `path_constraint_closure(label)` for the label you want to explain.
+17. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
+18. `close` at end.
+
+Concrete `read` pattern:
+1. `syms {"name_filter":"read"}` and pick the current session's `loaded_address`.
+2. `bp_add {"address":"<read_loaded_address>"}`.
+3. `send_line {"line":"AAAA"}` or `send_bytes` / `send_file` to queue stdin input for the target.
+4. `advance {"mode":"continue"}` until the breakpoint hits `read`.
+5. `regs {"names":["rsi","rdx"]}` on x86_64 SysV to capture `buf` and `count` at function entry.
+6. `advance {"mode":"return"}` so execution pauses after `read` returns and the destination buffer is filled from stdin.
+7. `symbolize_mem {"address":"<buf>", "size":<count>, "name":"stdin_buf"}` while paused.
+8. `mem {"address":"<buf>", "size":8}` to verify non-zero symbolic labels in `result.symbolic_bytes`.
+9. `expr {"label":"<first_nonzero_label>"}` if you need the expression for one byte/word.
+10. `advance {"mode":"continue"}` to keep running with that symbolic buffer.
 
 Trace file mode:
 - If live event streaming is unstable, set `start.qemu_config.instrumentation_trace_file_path` and use file-backed tracing via the same `trace_*` tools.
@@ -94,7 +115,8 @@ Trace file mode:
 - `regs` also carries symbolic register labels in `result.symbolic_registers` when supported.
 - `mem` also carries symbolic byte labels in `result.symbolic_bytes` when supported.
 - `expr`: render the symbolic expression for one concrete symbolic label, typically after discovering that label through `regs` or `mem`.
-- `symbolize_mem` / `symbolize_reg`: inject symbolic state into paused memory/registers.
+- `recent_path_constraints` / `path_constraint_closure`: scripting-side helpers for recent path-condition discovery and nested constraint closure lookup.
+- `symbolize_mem` / `symbolize_reg`: inject symbolic state into paused memory/registers. These are explicit actions; dynamiq does not symbolize newly received input for you.
 - `bt`: best-effort stack backtrace; use after breakpoints to quickly map call chains.
 - `trace_start` / `trace_stop` / `trace_status` / `trace_get`: trace tracing workflow and retrieval.
 - `qemu_config.instrumentation_trace_file_path`: optional trace spool file for deferred/offline trace retrieval.
@@ -148,7 +170,9 @@ Use a two-loop strategy: breadth first, then depth on hotspots.
 
 - Prefer absolute target paths in `start`.
 - For stack memory reads, call `regs` first and use live `rsp` from that result.
+- For user-controlled input, first send the stdin payload, then identify where the bytes live after the program reads them. For `read`-style functions, this usually means breaking on `read`, capturing `buf`/`count` at entry, pausing right after return, then symbolizing the now-populated destination buffer with `symbolize_mem`.
 - For symbolic reasoning, discover labels through `regs` or `mem` first, then call `expr` on the specific non-zero label you want to inspect.
+- For path-condition reasoning in scripting, use `recent_path_constraints()` to choose a label, then `path_constraint_closure(label)` to see the earlier constraints it depends on.
 - For call-chain context, call `bt` after a breakpoint hit before deeper `disasm`/`mem`.
 - Do not reuse addresses from previous sessions.
 - If tool output indicates malformed arguments, fix input shape before retrying.

@@ -29,6 +29,14 @@ python -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
+If you are running repo-local scripts without installing dynamiq into the
+active environment, use `PYTHONPATH=src` from the repo root:
+
+```bash
+cd /home/heng/git/dynamiq
+PYTHONPATH=src .venv/bin/python your_script.py
+```
+
 ### Build Instrumented Runtime Binaries
 
 Build both supported dynamiq runtimes into `tools/qemu/`:
@@ -139,6 +147,10 @@ Start it with:
 PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 ```
 
+In operator-managed deployments, launch the MCP server with the correct
+instrumented runtime for the target class. Runtime selection is an environment
+decision made by the launcher, not something delegated to the model.
+
 Backward-compatible module path is still supported:
 
 ```bash
@@ -167,6 +179,19 @@ PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 
 Use `symbolize_mem` and `symbolize_reg` to inject symbolic state into the current paused execution.
 Use `expr` to render the symbolic expression for a specific non-zero label discovered through `regs` or `mem`.
+For stdin-driven input functions such as `read` or `fgets`, send input first, break on the function, then pause after the call returns and the destination buffer is populated before symbolizing that concrete buffer.
+
+For symbolic path reasoning in the scripting API, use:
+- `session.recent_path_constraints(limit=...)` to discover recent path-condition labels
+- `session.path_constraint_closure(label)` to inspect the nested earlier constraints for one chosen label
+
+Typical flow:
+```python
+recent = session.recent_path_constraints(limit=8)
+label = recent["result"]["constraints"][0]["label"]
+expr = session.get_symbolic_expression(label)
+closure = session.path_constraint_closure(label)
+```
 
 ### MCP quickstart for interactive stdin/stdout
 

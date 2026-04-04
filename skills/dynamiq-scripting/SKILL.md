@@ -7,6 +7,16 @@ description: Use when implementing autonomous program analysis, testing, or secu
 
 Use this skill when building autonomous systems that need to control and analyze target programs programmatically. This is the Python scripting interface (not MCP).
 
+Examples below assume one of these setups:
+- dynamiq is installed into the active Python environment, or
+- you are running from the repo root with `PYTHONPATH=src`
+
+Repo-local example runner:
+```bash
+cd /home/heng/git/dynamiq
+PYTHONPATH=src .venv/bin/python your_script.py
+```
+
 ## When to Use Scripting API
 
 The **Scripting API** (`ScriptSession` class) is designed for:
@@ -52,7 +62,44 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
 - **Snapshots**: `take_snapshot()`, `restore_snapshot()`, `diff_snapshots()`
 - **Annotations**: `annotate()`, `list_annotations()`
 
-### 3. Auto-Detection (Zero Configuration)
+### 3. Symbolic Execution Support
+
+The scripting API now exposes symbolic-execution helpers through `AnalysisSession`:
+- `symbolize_memory(address, size, name=None)`
+- `symbolize_register(register, name=None)`
+- `get_symbolic_expression(label)`
+- `recent_path_constraints(limit=16)`
+- `path_constraint_closure(label)`
+
+Important:
+- Dynamiq does not symbolize stdin, argv, stack buffers, or heap buffers automatically.
+- Input is concrete by default until you explicitly call `symbolize_memory(...)` or `symbolize_register(...)`.
+- For `read` / `fgets`-style input, first send or arrange stdin data, then use breakpoints and execution control so you pause after the function returns and the destination buffer is already populated. Then symbolize that concrete buffer before continuing.
+
+Typical symbolic workflow:
+```python
+with ScriptSession(target="/path/to/target", auto_start=True) as session:
+    read_syms = session.symbols(name_filter="read")
+    read_addr = read_syms["result"]["symbols"][0]["loaded_address"]
+    session.bp_add(read_addr)
+    session.write_stdin("AAAA\n")
+    session.bp_run(timeout=2.0)
+
+    regs = session.get_registers(["rsi", "rdx"])
+    buf = regs["result"]["registers"]["rsi"]
+    size = int(regs["result"]["registers"]["rdx"], 16)
+
+    session.advance(mode="return", timeout=2.0)
+    session.symbolize_memory(buf, size, name="input_buf")
+    mem = session.read_memory(buf, min(size, 16))
+    label = mem["result"]["symbolic_bytes"][0]["label"]
+
+    expr = session.get_symbolic_expression(label)
+    recent = session.recent_path_constraints(limit=8)
+    closure = session.path_constraint_closure(recent["result"]["constraints"][0]["label"])
+```
+
+### 4. Auto-Detection (Zero Configuration)
 ```python
 # QEMU binary path auto-detected from target architecture
 # RPC socket auto-created in temp directory
@@ -195,6 +242,38 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
             # Check triggers on_change callback if memory changed
 ```
 
+### Workflow 5: Break on `read`, Send Stdin, Wait for Return, Then Symbolize
+```python
+with ScriptSession(target="/bin/myapp", auto_start=True) as session:
+    read_syms = session.symbols(name_filter="read")
+    read_addr = read_syms["result"]["symbols"][0]["loaded_address"]
+
+    # Break when read() is entered.
+    session.bp_add(read_addr)
+
+    # Queue stdin data, then run until read() is hit.
+    session.write_stdin("AAAA\n")
+    session.bp_run(timeout=2.0)
+
+    # On x86_64 SysV, read(fd, buf, count) uses:
+    #   rdi = fd, rsi = buf, rdx = count
+    entry_regs = session.get_registers(["rsi", "rdx"])
+    buf = entry_regs["result"]["registers"]["rsi"]
+    size = int(entry_regs["result"]["registers"]["rdx"], 16)
+
+    # Wait until read() returns so the destination buffer is populated.
+    session.advance(mode="return", timeout=2.0)
+
+    # Now symbolize the concrete buffer that read() just filled.
+    session.symbolize_memory(buf, size, name="stdin_buf")
+    mem = session.read_memory(buf, min(size, 8))
+    first_label = mem["result"]["symbolic_bytes"][0]["label"]
+    expr = session.get_symbolic_expression(first_label)
+
+    print(expr["result"]["expression"])
+    session.run(timeout=2.0)
+```
+
 ## Required Operating Rules
 
 1. **Always use context manager for cleanup**
@@ -234,6 +313,22 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
        qemu_config={"qemu_user_path": "/custom/qemu-x86_64"}  # Override only QEMU path
    ) as session:
        pass
+   ```
+
+7. **Treat symbolic state injection as explicit**
+   ```python
+   # Wrong assumption: input becomes symbolic automatically
+   # Correct: stop after the program has written the concrete bytes,
+   # then symbolize the specific buffer or register you want to track.
+   session.symbolize_memory(buf, size, name="input_buf")
+   ```
+
+8. **Verify symbolic state immediately**
+   ```python
+   mem = session.read_memory(buf, 8)
+   assert mem["result"]["symbolic_bytes"][0]["symbolic"] is True
+   label = mem["result"]["symbolic_bytes"][0]["label"]
+   expr = session.get_symbolic_expression(label)
    ```
 
 ## Error Handling
