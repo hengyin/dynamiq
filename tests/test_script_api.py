@@ -51,6 +51,10 @@ class MockBackend(BackendAdapter):
         self.call_history.append(f"step:{count}:{timeout}")
         return {"ok": True, "state": {"pc": "0x401010"}, "result": {"pc": "0x401010"}}
 
+    def advance(self, mode, count=None, timeout=5.0):
+        self.call_history.append(f"advance:{mode}:{count}:{timeout}")
+        return {"ok": True, "state": {"pc": "0x401020"}, "result": {"mode": mode, "count": count}}
+
     def advance_basic_blocks(self, count=1, timeout=5.0):
         self.call_history.append(f"advance_basic_blocks:{count}:{timeout}")
         return {"ok": True, "state": {}, "result": {"count": count}}
@@ -161,6 +165,26 @@ class MockBackend(BackendAdapter):
                 ]
             },
         }
+
+    def symbolize_memory(self, address, size, name=None):
+        self.call_history.append(f"symbolize_memory:{address}:{size}:{name}")
+        return {"ok": True, "state": {}, "result": {"address": address, "size": size, "name": name}}
+
+    def symbolize_register(self, register, name=None):
+        self.call_history.append(f"symbolize_register:{register}:{name}")
+        return {"ok": True, "state": {}, "result": {"register": register, "name": name}}
+
+    def get_symbolic_expression(self, label):
+        self.call_history.append(f"get_symbolic_expression:{label}")
+        return {"ok": True, "state": {}, "result": {"label": label, "expression": "input(0):i8"}}
+
+    def recent_path_constraints(self, limit=16):
+        self.call_history.append(f"recent_path_constraints:{limit}")
+        return {"ok": True, "state": {}, "result": {"constraints": [{"label": "0x12"}], "count": 1}}
+
+    def path_constraint_closure(self, label):
+        self.call_history.append(f"path_constraint_closure:{label}")
+        return {"ok": True, "state": {}, "result": {"root": {"label": label}, "constraints": []}}
 
     def break_at_addresses(self, addresses, timeout=5.0, max_steps=10000):
         self.call_history.append(f"break_at_addresses:{addresses}")
@@ -301,6 +325,17 @@ class TestScriptSessionMethodDelegation:
         assert result["ok"] is True
         assert "step:3:2.0" in backend.call_history
 
+    def test_advance_delegation(self):
+        """Test advance() delegates to backend."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+        session._session.state.session_status = "paused"
+
+        result = session.advance(mode="bb", count=2, timeout=2.0)
+
+        assert result["ok"] is True
+        assert backend.call_history.count("advance_basic_blocks:1:2.0") == 2
+
     def test_pause_delegation(self):
         """Test pause() delegates to backend."""
         backend = MockBackend()
@@ -342,6 +377,59 @@ class TestScriptSessionMethodDelegation:
 
         assert result["ok"] is True
         assert "read_memory:0x401000:32" in backend.call_history
+
+    def test_symbolize_memory_delegation(self):
+        """Test symbolize_memory() delegates to backend."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.symbolize_memory("0x404000", 8, name="buf")
+
+        assert result["ok"] is True
+        assert "symbolize_memory:0x404000:8:buf" in backend.call_history
+
+    def test_symbolize_register_delegation(self):
+        """Test symbolize_register() delegates to backend."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.symbolize_register("rax", name="reg")
+
+        assert result["ok"] is True
+        assert "symbolize_register:rax:reg" in backend.call_history
+
+    def test_get_symbolic_expression_delegation(self):
+        """Test get_symbolic_expression() delegates to backend."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.get_symbolic_expression("0x12")
+
+        assert result["ok"] is True
+        assert result["result"]["label"] == "0x12"
+        assert "get_symbolic_expression:0x12" in backend.call_history
+
+    def test_recent_path_constraints_delegation(self):
+        """Test recent_path_constraints() delegates to backend."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.recent_path_constraints(limit=4)
+
+        assert result["ok"] is True
+        assert result["result"]["count"] == 1
+        assert "recent_path_constraints:4" in backend.call_history
+
+    def test_path_constraint_closure_delegation(self):
+        """Test path_constraint_closure() delegates to backend."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.path_constraint_closure("0x12")
+
+        assert result["ok"] is True
+        assert result["result"]["root"]["label"] == "0x12"
+        assert "path_constraint_closure:0x12" in backend.call_history
 
     def test_disassemble_delegation(self):
         """Test disassemble() delegates to backend."""
@@ -567,21 +655,22 @@ class TestScriptSessionTracing:
         assert result["ok"] is True
 
 
-def test_all_31_methods_accessible():
-    """Verify all 31 AnalysisSession methods are exposed via ScriptSession."""
+def test_all_expected_methods_accessible():
+    """Verify the expected AnalysisSession methods are exposed via ScriptSession."""
     backend = MockBackend()
     session = ScriptSession(target="/bin/ls", backend=backend)
 
-    # List of all 31 public methods
+    # List of expected public methods
     expected_methods = [
         # Lifecycle (3)
         "start",
         "close",
         "capabilities",
-        # Execution (7)
+        # Execution
         "run",
         "pause",
         "step",
+        "advance",
         "advance_basic_blocks",
         "run_until_address",
         "break_at_addresses",
@@ -600,6 +689,11 @@ def test_all_31_methods_accessible():
         "disassemble",
         "list_memory_maps",
         "symbols",
+        "symbolize_memory",
+        "symbolize_register",
+        "get_symbolic_expression",
+        "recent_path_constraints",
+        "path_constraint_closure",
         # I/O (3)
         "write_stdin",
         "read_stdout",

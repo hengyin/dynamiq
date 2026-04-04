@@ -30,7 +30,7 @@ class ScriptSession:
     Provides:
     - Context manager support for automatic cleanup
     - Simplified initialization with sensible defaults
-    - All 31 AnalysisSession methods exposed as transparent delegates
+    - AnalysisSession methods exposed as transparent delegates
     - Convenience methods for common autonomous workflows
     - Standardized error handling and responses
 
@@ -175,7 +175,7 @@ class ScriptSession:
         """
         return self._session.capabilities()
 
-    # Execution Control (7 methods)
+    # Execution Control (8 methods)
     # =============================
 
     def run(self, timeout: float = 5.0) -> dict[str, Any]:
@@ -220,6 +220,23 @@ class ScriptSession:
             InvalidStateError: If session not started
         """
         return self._session.step(count=count, timeout=timeout)
+
+    def advance(self, mode: str, count: int | None = None, timeout: float = 5.0) -> dict[str, Any]:
+        """
+        Advance target execution using the unified execution-control API.
+
+        Args:
+            mode: One of ``continue``, ``insn``, ``bb``, or ``return``
+            count: Optional count for ``insn`` and ``bb`` modes
+            timeout: Time in seconds for execution (default: 5.0)
+
+        Returns:
+            Response dict with execution result.
+
+        Raises:
+            InvalidStateError: If session not started or arguments are invalid
+        """
+        return self._session.advance(mode=mode, count=count, timeout=timeout)
 
     def advance_basic_blocks(self, count: int = 1, timeout: float = 5.0) -> dict[str, Any]:
         """
@@ -449,6 +466,69 @@ class ScriptSession:
             InvalidStateError: If target binary not accessible
         """
         return self._session.symbols(max_count=max_count, name_filter=name_filter)
+
+    def symbolize_memory(self, address: str, size: int, name: str | None = None) -> dict[str, Any]:
+        """
+        Mark a paused guest memory range symbolic.
+
+        Args:
+            address: Guest address to symbolize
+            size: Number of bytes to symbolize
+            name: Optional symbolic variable hint
+
+        Returns:
+            Response dict with symbolization result.
+        """
+        return self._session.symbolize_memory(address=address, size=size, name=name)
+
+    def symbolize_register(self, register: str, name: str | None = None) -> dict[str, Any]:
+        """
+        Mark a paused guest register symbolic.
+
+        Args:
+            register: Register name
+            name: Optional symbolic variable hint
+
+        Returns:
+            Response dict with symbolization result.
+        """
+        return self._session.symbolize_register(register=register, name=name)
+
+    def get_symbolic_expression(self, label: str) -> dict[str, Any]:
+        """
+        Render a symbolic expression for one label.
+
+        Args:
+            label: Symbolic label as a hex string
+
+        Returns:
+            Response dict with expression details.
+        """
+        return self._session.get_symbolic_expression(label=label)
+
+    def recent_path_constraints(self, limit: int = 16) -> dict[str, Any]:
+        """
+        Return recent path-condition events discovered during execution.
+
+        Args:
+            limit: Maximum number of recent entries to return
+
+        Returns:
+            Response dict with recent path constraints.
+        """
+        return self._session.recent_path_constraints(limit=limit)
+
+    def path_constraint_closure(self, label: str) -> dict[str, Any]:
+        """
+        Return the nested path-constraint closure for one label.
+
+        Args:
+            label: Root path-constraint label
+
+        Returns:
+            Response dict with root and nested constraints.
+        """
+        return self._session.path_constraint_closure(label=label)
 
     # I/O Operations (3 methods)
     # ==========================

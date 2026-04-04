@@ -210,3 +210,67 @@ def test_symbols_pie_falls_back_to_basename_contains(monkeypatch) -> None:
 
     assert result["result"]["load_base"] == "0x400000"
     assert result["result"]["symbols"][0]["loaded_address"] == "0x401130"
+
+
+def test_symbols_include_imported_plt_entries_for_exec(monkeypatch) -> None:
+    def fake_run(cmd, check, capture_output, text):  # noqa: ANN001
+        del check, capture_output, text
+        if cmd[0] == "readelf" and cmd[1] == "-h":
+            return ProcResult("Type:                              EXEC (Executable file)\n")
+        if cmd[0] == "readelf" and cmd[1] == "-Ws":
+            return ProcResult(
+                "Symbol table '.dynsym' contains 2 entries:\n"
+                "   Num:    Value          Size Type    Bind   Vis      Ndx Name\n"
+                "     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT   UND read\n"
+            )
+        if cmd[0] == "objdump":
+            return ProcResult(
+                "Disassembly of section .plt.sec:\n"
+                "\n"
+                "00000000004010b0 <read@plt>:\n"
+                "  4010b0:\tf3 0f 1e fa\tendbr64\n"
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr("dynamiq.session.subprocess.run", fake_run)
+    session = AnalysisSession(backend=FakeBackend(maps_result=[]))
+    session.state.target = "/tmp/stripped.out"
+
+    result = session.symbols(name_filter="read")
+    symbols = result["result"]["symbols"]
+
+    assert [item["name"] for item in symbols] == ["read", "read@plt"]
+    assert symbols[0]["loaded_address"] is None
+    assert symbols[1]["loaded_address"] == "0x4010b0"
+
+
+def test_symbols_include_imported_plt_entries_for_pie(monkeypatch) -> None:
+    def fake_run(cmd, check, capture_output, text):  # noqa: ANN001
+        del check, capture_output, text
+        if cmd[0] == "readelf" and cmd[1] == "-h":
+            return ProcResult("Type:                              DYN (Position-Independent Executable file)\n")
+        if cmd[0] == "readelf" and cmd[1] == "-Ws":
+            return ProcResult(
+                "Symbol table '.dynsym' contains 2 entries:\n"
+                "   Num:    Value          Size Type    Bind   Vis      Ndx Name\n"
+                "     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT   UND read\n"
+            )
+        if cmd[0] == "objdump":
+            return ProcResult(
+                "Disassembly of section .plt.sec:\n"
+                "\n"
+                "00000000000010b0 <read@plt>:\n"
+                "    10b0:\tf3 0f 1e fa\tendbr64\n"
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr("dynamiq.session.subprocess.run", fake_run)
+    maps = [{"start": "0x555555554000", "end": "0x555555556000", "perm": "r-x", "name": "stripped.out"}]
+    session = AnalysisSession(backend=FakeBackend(maps_result=maps))
+    session.state.target = "/tmp/stripped.out"
+
+    result = session.symbols(name_filter="read")
+    symbols = result["result"]["symbols"]
+
+    assert [item["name"] for item in symbols] == ["read", "read@plt"]
+    assert symbols[1]["loaded_address"] == "0x5555555550b0"

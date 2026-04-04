@@ -464,6 +464,17 @@ class AnalysisSession:
                 raise InvalidStateError("unable to resolve PIE load base from memory maps")
             load_base = min(candidates)
         symbols = self._read_elf_symbols(target, elf_type=elf_type, load_base=load_base, max_count=max_count, name_filter=name_filter)
+        if len(symbols) < max_count:
+            symbols.extend(
+                self._read_plt_symbols(
+                    target,
+                    elf_type=elf_type,
+                    load_base=load_base,
+                    max_count=max_count - len(symbols),
+                    name_filter=name_filter,
+                    existing_names={str(item.get("name")) for item in symbols},
+                )
+            )
         return self._response(
             "symbols",
             {
@@ -884,6 +895,60 @@ class AnalysisSession:
                     "section": ndx,
                 }
             )
+            if len(items) >= max_count:
+                break
+        return items
+
+    @staticmethod
+    def _read_plt_symbols(
+        target: str,
+        *,
+        elf_type: str,
+        load_base: int,
+        max_count: int,
+        name_filter: str | None,
+        existing_names: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        result = subprocess.run(
+            ["objdump", "-d", "-j", ".plt", "-j", ".plt.sec", target],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        items: list[dict[str, Any]] = []
+        seen = set(existing_names or ())
+        needle = name_filter.lower() if isinstance(name_filter, str) and name_filter else None
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if not line or "<" not in line or ">:" not in line:
+                continue
+            left, rest = line.split("<", 1)
+            name = rest.split(">:", 1)[0].strip()
+            if name in {".plt", ".plt.got", ".plt.sec"}:
+                continue
+            if needle and needle not in name.lower():
+                continue
+            if name in seen:
+                continue
+            try:
+                symbol_addr = int(left, 16)
+            except ValueError:
+                continue
+            loaded_address = symbol_addr if elf_type == "EXEC" else load_base + symbol_addr
+            items.append(
+                {
+                    "name": name,
+                    "table": ".plt",
+                    "value": f"0x{symbol_addr:x}",
+                    "loaded_address": hex(loaded_address),
+                    "size": 0,
+                    "type": "FUNC",
+                    "bind": "GLOBAL",
+                    "visibility": "DEFAULT",
+                    "section": ".plt",
+                }
+            )
+            seen.add(name)
             if len(items) >= max_count:
                 break
         return items
