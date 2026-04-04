@@ -74,27 +74,23 @@ Dynamiq provides **two complementary interfaces** for analyzing target programs:
 7. `send_line` / `send_bytes` / `send_file` as needed.
 8. Repeat `advance {"mode":"continue"}` -> `stdout` -> `stderr` -> `state`.
 9. Use `regs`, `bt`, `disasm`, `mem`, `maps`, and `advance` for motion/inspection.
-10. Do not assume stdin, argv, stack buffers, or heap buffers become symbolic automatically. They are concrete unless you explicitly symbolize them.
-11. To symbolize an input buffer, first stop at a point where the target has already copied or parsed the input into a concrete memory region, then locate that region with `regs`, `bt`, `mem`, `maps`, or breakpoints on parser/handler code.
-12. For `read` / `fgets` / similar stdin-oriented input routines, first send input with `send_line`, `send_bytes`, or `send_file`, then use breakpoints and `advance` so you pause after the function returns, when the destination buffer has been filled.
-13. Once the buffer address and size are known, call `symbolize_mem {"address":"...", "size":N, "name":"..."}` while paused. Use `symbolize_reg` only when the symbolic source should be a register value rather than memory.
-14. Immediately verify the result with `mem` or `regs`. Expect symbolic metadata in `mem.result.symbolic_bytes` or `regs.result.symbolic_registers`. If those labels are still zero/concrete, you symbolized the wrong location or did it at the wrong time.
-15. After finding a non-zero symbolic label in `regs` or `mem`, use `expr` to inspect the symbolic expression for that label.
+10. Do not assume argv, stack buffers, heap buffers, or derived parser buffers become symbolic automatically. Use `symbolize_mem` or `symbolize_reg` explicitly for those.
+11. For stdin-driven input, prefer the built-in queued stdin flow. `send_line`, `send_bytes`, and `send_file` accept `symbolic: true`. When the runtime supports `queue_stdin_chunk`, each stdin write is recorded as an ordered concrete or symbolic chunk, and the guest buffer becomes symbolic automatically when stdin syscalls consume those bytes.
+12. Mixed stdin is supported. You can send concrete menu choices first, then a symbolic payload, then more concrete input. Keep the send order exact because the runtime preserves that byte-stream order.
+13. Immediately verify the result with `mem` or `regs` after execution reaches a point where the guest has consumed the stdin bytes. Expect symbolic metadata in `mem.result.symbolic_bytes` or `regs.result.symbolic_registers`.
+14. After finding a non-zero symbolic label in `regs` or `mem`, use `expr` to inspect the symbolic expression for that label.
+15. Use the older manual breakpoint-plus-`symbolize_mem` workflow only when the data source is not stdin, or when you need to symbolize a later derived buffer rather than the original stdin stream.
 16. For path-constraint reasoning in the scripting API, first call `recent_path_constraints(limit=...)`, then `path_constraint_closure(label)` for the label you want to explain.
 17. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
 18. `close` at end.
 
-Concrete `read` pattern:
-1. `syms {"name_filter":"read"}` and pick the current session's `loaded_address`.
-2. `bp_add {"address":"<read_loaded_address>"}`.
-3. `send_line {"line":"AAAA"}` or `send_bytes` / `send_file` to queue stdin input for the target.
-4. `advance {"mode":"continue"}` until the breakpoint hits `read`.
-5. `regs {"names":["rsi","rdx"]}` on x86_64 SysV to capture `buf` and `count` at function entry.
-6. `advance {"mode":"return"}` so execution pauses after `read` returns and the destination buffer is filled from stdin.
-7. `symbolize_mem {"address":"<buf>", "size":<count>, "name":"stdin_buf"}` while paused.
-8. `mem {"address":"<buf>", "size":8}` to verify non-zero symbolic labels in `result.symbolic_bytes`.
-9. `expr {"label":"<first_nonzero_label>"}` if you need the expression for one byte/word.
-10. `advance {"mode":"continue"}` to keep running with that symbolic buffer.
+Concrete stdin pattern:
+1. `start` the target.
+2. `send_line {"line":"1"}` for concrete menu input, or `send_line {"line":"AAAA", "symbolic": true}` / `send_bytes {"data":"AAAA", "symbolic": true}` for symbolic stdin.
+3. `advance {"mode":"continue"}` until the program reaches the point where it has consumed that input.
+4. `stdout`, `stderr`, `state`, `regs`, or `mem` to confirm how the input affected execution and whether symbolic labels appeared.
+5. `expr {"label":"<first_nonzero_label>"}` if you need the expression for one symbolic byte or word.
+6. `advance {"mode":"continue"}` to keep running.
 
 Trace file mode:
 - If live event streaming is unstable, set `start.qemu_config.instrumentation_trace_file_path` and use file-backed tracing via the same `trace_*` tools.
@@ -108,9 +104,9 @@ Trace file mode:
 - `syms`: resolve runtime addresses for this session only.
 - `bp_add` / `bp_del` / `bp_clear` / `bp_list`: breakpoint management.
 - `stdout` / `stderr`: incremental stream reads (cursor maintained by server).
-- `send_line`: appends newline automatically.
-- `send_bytes`: use `data` (text) or `data_hex` (raw bytes), not both.
-- `send_file`: stream bytes from local file to stdin.
+- `send_line`: appends newline automatically; add `symbolic: true` when you want that stdin line queued as symbolic.
+- `send_bytes`: use `data` (text) or `data_hex` (raw bytes), not both; add `symbolic: true` for symbolic stdin bytes.
+- `send_file`: stream bytes from local file to stdin; add `symbolic: true` when the streamed bytes should become symbolic on stdin consumption.
 - `regs` / `bt` / `disasm` / `mem` / `maps`: low-level state inspection.
 - `regs` also carries symbolic register labels in `result.symbolic_registers` when supported.
 - `mem` also carries symbolic byte labels in `result.symbolic_bytes` when supported.
@@ -170,7 +166,7 @@ Use a two-loop strategy: breadth first, then depth on hotspots.
 
 - Prefer absolute target paths in `start`.
 - For stack memory reads, call `regs` first and use live `rsp` from that result.
-- For user-controlled input, first send the stdin payload, then identify where the bytes live after the program reads them. For `read`-style functions, this usually means breaking on `read`, capturing `buf`/`count` at entry, pausing right after return, then symbolizing the now-populated destination buffer with `symbolize_mem`.
+- For stdin-controlled input, prefer `send_line` / `send_bytes` / `send_file` with `symbolic: true` instead of manual post-`read` buffer symbolization. Fall back to `symbolize_mem` only for non-stdin sources or derived buffers.
 - For symbolic reasoning, discover labels through `regs` or `mem` first, then call `expr` on the specific non-zero label you want to inspect.
 - For path-condition reasoning in scripting, use `recent_path_constraints()` to choose a label, then `path_constraint_closure(label)` to see the earlier constraints it depends on.
 - For call-chain context, call `bt` after a breakpoint hit before deeper `disasm`/`mem`.

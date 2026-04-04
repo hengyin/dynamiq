@@ -72,29 +72,26 @@ The scripting API now exposes symbolic-execution helpers through `AnalysisSessio
 - `path_constraint_closure(label)`
 
 Important:
-- Dynamiq does not symbolize stdin, argv, stack buffers, or heap buffers automatically.
-- Input is concrete by default until you explicitly call `symbolize_memory(...)` or `symbolize_register(...)`.
-- For `read` / `fgets`-style input, first send or arrange stdin data, then use breakpoints and execution control so you pause after the function returns and the destination buffer is already populated. Then symbolize that concrete buffer before continuing.
+- Dynamiq does not symbolize argv, stack buffers, heap buffers, or derived parser buffers automatically.
+- For stdin-driven input, prefer `write_stdin(..., symbolic=True)`. When the runtime supports `queue_stdin_chunk`, dynamiq records each stdin write as an ordered concrete or symbolic chunk, and the consumed stdin bytes become symbolic automatically at the syscall boundary.
+- Use explicit `symbolize_memory(...)` or `symbolize_register(...)` for non-stdin sources or when you want to symbolize a later derived buffer instead of the original stdin stream.
 
-Typical symbolic workflow:
+Typical symbolic stdin workflow:
 ```python
 with ScriptSession(target="/path/to/target", auto_start=True) as session:
-    read_syms = session.symbols(name_filter="read")
-    read_addr = read_syms["result"]["symbols"][0]["loaded_address"]
-    session.bp_add(read_addr)
-    session.write_stdin("AAAA\n")
-    session.bp_run(timeout=2.0)
+    session.write_stdin("1\n", symbolic=False)   # concrete menu choice
+    session.write_stdin("AAAA", symbolic=True)   # symbolic stdin payload
+    session.advance(mode="continue", timeout=2.0)
 
-    regs = session.get_registers(["rsi", "rdx"])
-    buf = regs["result"]["registers"]["rsi"]
-    size = int(regs["result"]["registers"]["rdx"], 16)
+    # Once the target has consumed the stdin bytes, inspect memory or registers.
+    mem = session.read_memory("0x404030", 8)
+    first_symbolic = next(
+        entry["label"]
+        for entry in mem["result"]["symbolic_bytes"]
+        if entry["symbolic"]
+    )
 
-    session.advance(mode="return", timeout=2.0)
-    session.symbolize_memory(buf, size, name="input_buf")
-    mem = session.read_memory(buf, min(size, 16))
-    label = mem["result"]["symbolic_bytes"][0]["label"]
-
-    expr = session.get_symbolic_expression(label)
+    expr = session.get_symbolic_expression(first_symbolic)
     recent = session.recent_path_constraints(limit=8)
     closure = session.path_constraint_closure(recent["result"]["constraints"][0]["label"])
 ```
@@ -242,36 +239,24 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
             # Check triggers on_change callback if memory changed
 ```
 
-### Workflow 5: Break on `read`, Send Stdin, Wait for Return, Then Symbolize
+### Workflow 5: Mixed Concrete and Symbolic Stdin
 ```python
 with ScriptSession(target="/bin/myapp", auto_start=True) as session:
-    read_syms = session.symbols(name_filter="read")
-    read_addr = read_syms["result"]["symbols"][0]["loaded_address"]
+    session.write_stdin("1\n", symbolic=False)    # concrete menu input
+    session.write_stdin("AAAA", symbolic=True)    # symbolic stdin payload
+    session.advance(mode="continue", timeout=2.0)
 
-    # Break when read() is entered.
-    session.bp_add(read_addr)
+    # Inspect where the program consumed the stdin bytes.
+    mem = session.read_memory("0x404030", 8)
+    symbolic_labels = [
+        entry["label"]
+        for entry in mem["result"]["symbolic_bytes"]
+        if entry["symbolic"]
+    ]
 
-    # Queue stdin data, then run until read() is hit.
-    session.write_stdin("AAAA\n")
-    session.bp_run(timeout=2.0)
-
-    # On x86_64 SysV, read(fd, buf, count) uses:
-    #   rdi = fd, rsi = buf, rdx = count
-    entry_regs = session.get_registers(["rsi", "rdx"])
-    buf = entry_regs["result"]["registers"]["rsi"]
-    size = int(entry_regs["result"]["registers"]["rdx"], 16)
-
-    # Wait until read() returns so the destination buffer is populated.
-    session.advance(mode="return", timeout=2.0)
-
-    # Now symbolize the concrete buffer that read() just filled.
-    session.symbolize_memory(buf, size, name="stdin_buf")
-    mem = session.read_memory(buf, min(size, 8))
-    first_label = mem["result"]["symbolic_bytes"][0]["label"]
-    expr = session.get_symbolic_expression(first_label)
-
-    print(expr["result"]["expression"])
-    session.run(timeout=2.0)
+    if symbolic_labels:
+        expr = session.get_symbolic_expression(symbolic_labels[0])
+        print(expr["result"]["expression"])
 ```
 
 ## Required Operating Rules
@@ -315,13 +300,12 @@ with ScriptSession(target="/bin/myapp", auto_start=True) as session:
        pass
    ```
 
-7. **Treat symbolic state injection as explicit**
+7. **Use queued symbolic stdin for stdin-driven input**
    ```python
-   # Wrong assumption: input becomes symbolic automatically
-   # Correct: stop after the program has written the concrete bytes,
-   # then symbolize the specific buffer or register you want to track.
-   session.symbolize_memory(buf, size, name="input_buf")
+   session.write_stdin("menu\n", symbolic=False)
+   session.write_stdin("AAAA", symbolic=True)
    ```
+   This is the preferred path for stdin. Use `symbolize_memory(...)` only for non-stdin sources or later derived buffers.
 
 8. **Verify symbolic state immediately**
    ```python

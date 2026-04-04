@@ -339,15 +339,32 @@ class QemuUserInstrumentedBackend:
         self._record_stop_transition("resume_until_basic_block", before_status, before_pc)
         return self._response(result)
 
-    def write_stdin(self, data: str | bytes) -> dict[str, Any]:
+    def write_stdin(self, data: str | bytes, symbolic: bool = False) -> dict[str, Any]:
         self._require_started()
         if self._process_runner is None:
             raise UnsupportedOperationError("backend does not have a launched process")
         status = self._state.get("session_status")
         if status not in {"idle", "running", "paused"}:
             raise InvalidStateError("session is not active; start session before write_stdin")
+        if isinstance(data, bytes):
+            payload_size = len(data)
+        else:
+            payload_size = len(data.encode("utf-8", errors="replace"))
+        if self._instrumentation_rpc is not None:
+            queue_result = self._rpc_request(
+                "queue_stdin_chunk",
+                {"size": payload_size, "symbolic": symbolic},
+            )
+            pending = queue_result.get("pending_stdin_bytes")
+            if isinstance(pending, int):
+                self._state["pending_stdin_bytes"] = pending
+            pending_symbolic = queue_result.get("pending_symbolic_stdin_bytes")
+            if isinstance(pending_symbolic, int):
+                self._state["pending_symbolic_stdin_bytes"] = pending_symbolic
+        elif symbolic:
+            raise UnsupportedOperationError("backend does not support symbolic stdin queueing")
         written = self._process_runner.write_stdin(data)
-        return self._response({"written": written})
+        return self._response({"written": written, "symbolic": symbolic})
 
     def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
         self._require_started()

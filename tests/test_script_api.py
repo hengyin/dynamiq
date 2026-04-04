@@ -99,9 +99,9 @@ class MockBackend(BackendAdapter):
             "result": {"maps": {"regions": []}},
         }
 
-    def write_stdin(self, data):
-        self.call_history.append(f"write_stdin:{len(data)}")
-        return {"ok": True, "state": {}, "result": {"written": len(data)}}
+    def write_stdin(self, data, symbolic=False):
+        self.call_history.append(f"write_stdin:{len(data)}:{symbolic}")
+        return {"ok": True, "state": {}, "result": {"written": len(data), "symbolic": symbolic}}
 
     def read_stdout(self, cursor=0, max_chars=4096):
         self.call_history.append(f"read_stdout:{cursor}:{max_chars}")
@@ -559,7 +559,18 @@ class TestScriptSessionInputOutput:
         result = session.write_stdin("test input")
 
         assert result["ok"] is True
-        assert "write_stdin" in backend.call_history[0]
+        assert backend.call_history[0] == "write_stdin:10:False"
+
+    def test_write_stdin_symbolic(self):
+        """Test write_stdin(symbolic=True) delegates to backend."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.write_stdin("abc", symbolic=True)
+
+        assert result["ok"] is True
+        assert result["result"]["symbolic"] is True
+        assert backend.call_history[0] == "write_stdin:3:True"
 
     def test_read_stdout(self):
         """Test read_stdout() delegates to backend."""

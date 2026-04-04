@@ -130,13 +130,13 @@ class FakeSession:
     def advance_basic_blocks(self, count=1, timeout=5.0):  # noqa: ANN001
         return {"ok": True, "command": "advance_basic_blocks", "result": {"count": count, "timeout": timeout}}
 
-    def write_stdin(self, data):  # noqa: ANN001
+    def write_stdin(self, data, symbolic=False):  # noqa: ANN001
         if isinstance(data, str):
             payload = data.encode("utf-8")
         else:
             payload = data
         self.stdin_written += payload
-        return {"ok": True, "command": "write_stdin", "result": {"written": len(payload)}}
+        return {"ok": True, "command": "write_stdin", "result": {"written": len(payload), "symbolic": symbolic}}
 
     def read_stdout(self, cursor=0, max_chars=4096):  # noqa: ANN001
         self.stdout_cursors.append(cursor)
@@ -496,6 +496,22 @@ def test_mcp_tool_call_send_bytes() -> None:
     assert response is not None
     assert response["result"]["isError"] is False
     assert response["result"]["structuredContent"]["result"]["written"] == 3
+
+
+def test_mcp_tool_call_send_bytes_symbolic() -> None:
+    fake = FakeSession()
+    server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 551,
+            "method": "tools/call",
+            "params": {"name": "send_bytes", "arguments": {"data": "abc", "symbolic": True}},
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    assert response["result"]["structuredContent"]["result"]["symbolic"] is True
 
 
 def test_mcp_tool_call_send_line_appends_newline() -> None:

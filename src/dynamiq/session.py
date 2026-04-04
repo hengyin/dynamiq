@@ -439,8 +439,8 @@ class AnalysisSession:
         pointer_size = self._current_pointer_size()
         return self._read_pointer(sp, pointer_size)
 
-    def write_stdin(self, data: str | bytes) -> dict[str, Any]:
-        return self._forward("write_stdin", self.backend.write_stdin(data))
+    def write_stdin(self, data: str | bytes, symbolic: bool = False) -> dict[str, Any]:
+        return self._forward("write_stdin", self.backend.write_stdin(data, symbolic=symbolic))
 
     def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
         return self._forward("read_stdout", self.backend.read_stdout(cursor, max_chars))

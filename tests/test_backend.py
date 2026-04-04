@@ -275,6 +275,16 @@ class FakeInstrumentationRpcClient:
             }
         if method == "list_memory_maps":
             return {"regions": [{"start": "0x400000", "end": "0x401000", "perm": "r-x"}]}
+        if method == "queue_stdin_chunk":
+            size = int(params["size"])
+            symbolic = bool(params.get("symbolic", False))
+            return {
+                "size": size,
+                "symbolic": symbolic,
+                "stream_offset": "0x0",
+                "pending_stdin_bytes": size,
+                "pending_symbolic_stdin_bytes": size if symbolic else 0,
+            }
         if method == "start_trace":
             if not self.trace_file:
                 self.trace_file = "/tmp/fake-trace.ndjson"
@@ -972,6 +982,62 @@ def test_backend_write_stdin_allows_idle_session_state() -> None:
     result = backend.write_stdin("1\n")
     assert result["result"]["written"] == 2
     assert runner.stdin_writes == ["1\n"]
+
+def test_backend_write_stdin_symbolic_queues_chunk_before_write() -> None:
+    runner = FakeProcessRunner()
+    rpc = FakeInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=FakeInstrumentationClient(),
+        instrumentation_rpc_client=rpc,
+        process_runner=runner,
+    )
+    backend.start("target.bin", [], None, {"launch": True, "qemu_user_path": "/usr/bin/qemu-x86_64"})
+    backend._state["session_status"] = "paused"
+
+    result = backend.write_stdin("abc", symbolic=True)
+
+    assert result["result"]["written"] == 3
+    assert result["result"]["symbolic"] is True
+    assert rpc.requests[-1] == ("queue_stdin_chunk", {"size": 3, "symbolic": True})
+    assert runner.stdin_writes == ["abc"]
+
+
+def test_backend_write_stdin_mixed_chunks_preserve_queue_order() -> None:
+    runner = FakeProcessRunner()
+    rpc = FakeInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=FakeInstrumentationClient(),
+        instrumentation_rpc_client=rpc,
+        process_runner=runner,
+    )
+    backend.start("target.bin", [], None, {"launch": True, "qemu_user_path": "/usr/bin/qemu-x86_64"})
+    backend._state["session_status"] = "paused"
+
+    backend.write_stdin("ab", symbolic=False)
+    backend.write_stdin("cde", symbolic=True)
+
+    assert rpc.requests[-2:] == [
+        ("queue_stdin_chunk", {"size": 2, "symbolic": False}),
+        ("queue_stdin_chunk", {"size": 3, "symbolic": True}),
+    ]
+    assert runner.stdin_writes == ["ab", "cde"]
+
+
+def test_backend_write_stdin_symbolic_requires_rpc_channel() -> None:
+    runner = FakeProcessRunner()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=FakeInstrumentationClient(),
+        instrumentation_rpc_client=None,
+        process_runner=runner,
+    )
+    backend.start("target.bin", [], None, {})
+    backend._state["session_status"] = "paused"
+
+    with pytest.raises(UnsupportedOperationError, match="symbolic stdin queueing"):
+        backend.write_stdin("abc", symbolic=True)
 
 
 def test_backend_get_registers_uses_rpc_channel() -> None:

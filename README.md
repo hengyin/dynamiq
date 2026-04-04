@@ -179,7 +179,8 @@ PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 
 Use `symbolize_mem` and `symbolize_reg` to inject symbolic state into the current paused execution.
 Use `expr` to render the symbolic expression for a specific non-zero label discovered through `regs` or `mem`.
-For stdin-driven input functions such as `read` or `fgets`, send input first, break on the function, then pause after the call returns and the destination buffer is populated before symbolizing that concrete buffer.
+For stdin-driven input, prefer the built-in queued stdin flow: `send_bytes`, `send_line`, and `send_file` now accept `symbolic: true`. When the runtime supports `queue_stdin_chunk`, dynamiq records each stdin write as an ordered concrete or symbolic chunk and SymFit applies symbolic labels automatically when the guest later consumes those bytes through stdin syscalls.
+Use the older manual breakpoint-plus-`symbolize_mem` workflow only when the data source is not stdin, or when you need to symbolize some derived buffer instead of the original stdin stream.
 
 For symbolic path reasoning in the scripting API, use:
 - `session.recent_path_constraints(limit=...)` to discover recent path-condition labels
@@ -227,6 +228,14 @@ Example `tools/call` arguments:
 }
 ```
 
+- `send_bytes` with symbolic stdin queueing
+```json
+{
+  "data": "AAAA",
+  "symbolic": true
+}
+```
+
 - `send_bytes` (raw bytes via hex)
 ```json
 {
@@ -241,11 +250,28 @@ Example `tools/call` arguments:
 }
 ```
 
+- `send_line` with symbolic stdin queueing
+```json
+{
+  "line": "AAAA",
+  "symbolic": true
+}
+```
+
 - `send_file` (required `path`, streams raw file bytes)
 ```json
 {
   "path": "/tmp/pov_input.txt",
   "append_newline": true
+}
+```
+
+- `send_file` with symbolic stdin queueing
+```json
+{
+  "path": "/tmp/pov_input.txt",
+  "append_newline": true,
+  "symbolic": true
 }
 ```
 

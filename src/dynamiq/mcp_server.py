@@ -271,6 +271,7 @@ class InteractiveAnalysisMcpServer:
             if name == "send_bytes":
                 data = arguments.get("data")
                 data_hex = arguments.get("data_hex")
+                symbolic = self._parse_bool(arguments, "symbolic", default=False)
                 if data is not None and data_hex is not None:
                     return self._tool_error("send_bytes accepts either `data` or `data_hex`, not both")
                 if data_hex is not None:
@@ -288,21 +289,22 @@ class InteractiveAnalysisMcpServer:
                         return self._tool_error("send_bytes `data_hex` must contain only hex byte pairs")
                     if len(payload) == 0:
                         return self._tool_error("send_bytes decoded payload is empty")
-                    return self._tool_ok(self._ensure_session().write_stdin(data=payload))
+                    return self._tool_ok(self._ensure_session().write_stdin(data=payload, symbolic=symbolic))
                 if not isinstance(data, str) or data == "":
                     return self._tool_error(
                         "send_bytes requires non-empty string argument `data` or `data_hex` "
-                        '(example: {"data":"1\\n"} or {"data_hex":"4142430a"})'
+                        '(example: {"data":"1\n"} or {"data_hex":"4142430a"})'
                     )
-                return self._tool_ok(self._ensure_session().write_stdin(data=data))
+                return self._tool_ok(self._ensure_session().write_stdin(data=data, symbolic=symbolic))
             if name == "send_line":
                 line = arguments.get("line", "")
+                symbolic = self._parse_bool(arguments, "symbolic", default=False)
                 if not isinstance(line, str):
                     return self._tool_error(
                         "send_line requires string argument `line` "
                         '(example: {"line":"1"})'
                     )
-                return self._tool_ok(self._ensure_session().write_stdin(data=f"{line}\n"))
+                return self._tool_ok(self._ensure_session().write_stdin(data=f"{line}\n", symbolic=symbolic))
             if name == "send_file":
                 path_value = arguments.get("path")
                 if not isinstance(path_value, str) or path_value.strip() == "":
@@ -311,6 +313,7 @@ class InteractiveAnalysisMcpServer:
                         '(example: {"path":"/tmp/pov_input.txt"})'
                     )
                 append_newline = self._parse_bool(arguments, "append_newline", default=False)
+                symbolic = self._parse_bool(arguments, "symbolic", default=False)
                 path = Path(path_value)
                 if not path.exists() or not path.is_file():
                     return self._tool_error(f"send_file path is not a readable file: {path_value}")
@@ -321,12 +324,12 @@ class InteractiveAnalysisMcpServer:
                         chunk = fp.read(4096)
                         if not chunk:
                             break
-                        write_result = session.write_stdin(data=chunk)
+                        write_result = session.write_stdin(data=chunk, symbolic=symbolic)
                         total_written += int(write_result["result"].get("written", 0))
                 if append_newline:
-                    write_result = session.write_stdin(data=b"\n")
+                    write_result = session.write_stdin(data=b"\n", symbolic=symbolic)
                     total_written += int(write_result["result"].get("written", 0))
-                return self._tool_ok({"written": total_written, "path": str(path), "append_newline": append_newline})
+                return self._tool_ok({"written": total_written, "path": str(path), "append_newline": append_newline, "symbolic": symbolic})
             if name == "stdout":
                 max_chars = self._parse_int(arguments, "max_chars", default=4096, minimum=1)
                 wait_ms = self._parse_int(arguments, "wait_ms", default=150, minimum=0)
@@ -928,6 +931,11 @@ class InteractiveAnalysisMcpServer:
                             "description": "Exact raw bytes encoded as hex (supports optional leading 0x).",
                             "minLength": 1,
                         },
+                        "symbolic": {
+                            "type": "boolean",
+                            "description": "Queue this stdin chunk for symbolic labeling when the guest consumes it.",
+                            "default": False,
+                        },
                     },
                     "anyOf": [{"required": ["data"]}, {"required": ["data_hex"]}],
                     "additionalProperties": False,
@@ -948,6 +956,11 @@ class InteractiveAnalysisMcpServer:
                             "type": "string",
                             "description": "Line content without trailing newline.",
                             "default": "",
+                        },
+                        "symbolic": {
+                            "type": "boolean",
+                            "description": "Queue this stdin line for symbolic labeling when the guest consumes it.",
+                            "default": False,
                         }
                     },
                     "additionalProperties": False,
@@ -971,6 +984,11 @@ class InteractiveAnalysisMcpServer:
                         "append_newline": {
                             "type": "boolean",
                             "description": "Append a final newline after file contents.",
+                            "default": False,
+                        },
+                        "symbolic": {
+                            "type": "boolean",
+                            "description": "Queue streamed file bytes for symbolic labeling when the guest consumes them.",
                             "default": False,
                         },
                     },
