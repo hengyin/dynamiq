@@ -69,16 +69,14 @@ def _marker_address(session: AnalysisSession) -> str:
     raise AssertionError("marker symbol not found in live target")
 
 
-@pytest.mark.live_qemu
-def test_live_breakpoint_rehit_stability(tmp_path: Path) -> None:
-    binary = _compile_breakpoint_stress_binary(tmp_path)
+def _start_live_session(binary: Path, cwd: Path) -> AnalysisSession:
     session = AnalysisSession(backend=QemuUserInstrumentedBackend())
     qemu_user_path = _resolve_x86_64_qemu()
     try:
         session.start(
             target=str(binary),
             args=[],
-            cwd=str(tmp_path),
+            cwd=str(cwd),
             qemu_config={
                 "launch": True,
                 "qemu_user_path": qemu_user_path,
@@ -87,6 +85,13 @@ def test_live_breakpoint_rehit_stability(tmp_path: Path) -> None:
         )
     except SessionTimeoutError:
         pytest.skip("live qemu RPC socket unavailable in this environment")
+    return session
+
+
+@pytest.mark.live_qemu
+def test_live_breakpoint_rehit_stability(tmp_path: Path) -> None:
+    binary = _compile_breakpoint_stress_binary(tmp_path)
+    session = _start_live_session(binary, tmp_path)
     try:
         marker = _marker_address(session)
         session.bp_add(marker)
@@ -116,5 +121,70 @@ def test_live_breakpoint_rehit_stability(tmp_path: Path) -> None:
         assert final_state.get("session_status") == "exited"
         assert final_state.get("exit_code") == 0
         assert final_state.get("exit_signal") is None
+    finally:
+        session.close()
+
+
+@pytest.mark.live_qemu
+def test_live_session_advance_insn_and_bb_modes(tmp_path: Path) -> None:
+    binary = _compile_breakpoint_stress_binary(tmp_path)
+    session = _start_live_session(binary, tmp_path)
+    try:
+        regs_before = session.get_registers(["rip"])["result"]["registers"]
+        rip_before = regs_before["rip"]
+
+        insn = session.advance(mode="insn", count=2, timeout=5.0)
+        regs_after_insn = session.get_registers(["rip"])["result"]["registers"]
+
+        assert insn["result"]["mode"] == "insn"
+        assert insn["result"]["completed"] is True
+        assert insn["result"]["requested_count"] == 2
+        assert insn["result"]["actual_count"] == 2
+        assert insn["result"]["stop_reason"] == "target_reached"
+        assert insn["state"]["last_rpc_method"] == "single_step"
+        assert regs_after_insn["rip"] == insn["result"]["pc"]
+        assert regs_after_insn["rip"] != rip_before
+
+        bb = session.advance(mode="bb", count=1, timeout=5.0)
+        regs_after_bb = session.get_registers(["rip"])["result"]["registers"]
+
+        assert bb["result"]["mode"] == "bb"
+        assert bb["result"]["completed"] is True
+        assert bb["result"]["requested_count"] == 1
+        assert bb["result"]["actual_count"] == 1
+        assert bb["result"]["stop_reason"] == "target_reached"
+        assert bb["state"]["last_rpc_method"] == "resume_until_basic_block"
+        assert regs_after_bb["rip"] == bb["result"]["pc"]
+        assert regs_after_bb["rip"] != regs_after_insn["rip"]
+    finally:
+        session.close()
+
+
+@pytest.mark.live_qemu
+def test_live_session_advance_return_mode(tmp_path: Path) -> None:
+    binary = _compile_breakpoint_stress_binary(tmp_path)
+    session = _start_live_session(binary, tmp_path)
+    try:
+        marker = _marker_address(session)
+        session.bp_add(marker)
+
+        hit = session.advance(mode="continue", timeout=5.0)
+        regs_at_marker = session.get_registers(["rip"])["result"]["registers"]
+
+        assert hit["result"]["stop_reason"] == "breakpoint"
+        assert hit["result"]["matched_address"] == marker.lower()
+        assert regs_at_marker["rip"] == marker.lower()
+        assert hit["state"]["session_status"] == "paused"
+
+        returned = session.advance(mode="return", timeout=5.0)
+        regs_after_return = session.get_registers(["rip"])["result"]["registers"]
+
+        assert returned["result"]["mode"] == "return"
+        assert returned["result"]["completed"] is True
+        assert returned["result"]["stop_reason"] == "target_reached"
+        assert returned["result"]["matched_address"] == returned["result"]["return_address"]
+        assert regs_after_return["rip"] == returned["result"]["return_address"]
+        assert returned["state"]["session_status"] == "paused"
+        assert regs_after_return["rip"] != marker.lower()
     finally:
         session.close()

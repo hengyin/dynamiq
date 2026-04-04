@@ -228,11 +228,16 @@ class AnalysisSession:
                 return self._response("advance", result)
 
             if self.state.session_status in {"paused", "idle", "exited", "closed"}:
+                stop_reason = self._infer_stop_reason({}, self._read_live_pc(), completed=False)
                 result = {
                     "mode": "continue",
                     "completed": False,
-                    "stop_reason": self._infer_stop_reason({}, self._read_live_pc(), completed=False),
+                    "stop_reason": stop_reason,
                 }
+                if stop_reason == "paused" and self.state.session_status in {"paused", "idle"}:
+                    result["stop_reason"] = "io"
+                    result["stdout_ready"] = False
+                    result["stderr_ready"] = False
                 if isinstance(self.state.pc, str):
                     result["pc"] = self.state.pc
                 return self._response("advance", result)

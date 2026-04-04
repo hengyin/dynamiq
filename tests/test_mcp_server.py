@@ -691,6 +691,46 @@ def test_mcp_tool_call_advance_insn() -> None:
     assert payload["result"]["requested_count"] == 3
 
 
+def test_mcp_tool_call_advance_return() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 6011,
+            "method": "tools/call",
+            "params": {"name": "advance", "arguments": {"mode": "return", "timeout": 1.5}},
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    payload = response["result"]["structuredContent"]
+    assert payload["command"] == "advance"
+    assert payload["result"]["mode"] == "return"
+
+
+def test_mcp_tool_call_advance_rejects_count_for_continue() -> None:
+    class InvalidCountSession(FakeSession):
+        def advance(self, mode, count=None, timeout=5.0):  # noqa: ANN001
+            del timeout
+            if mode == "continue" and count is not None:
+                raise InvalidStateError("advance count is only valid for insn and bb modes")
+            return super().advance(mode=mode, count=count, timeout=5.0)
+
+    server = InteractiveAnalysisMcpServer(session_factory=InvalidCountSession)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 6012,
+            "method": "tools/call",
+            "params": {"name": "advance", "arguments": {"mode": "continue", "count": 1, "timeout": 1.5}},
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is True
+    text = response["result"]["content"][0]["text"]
+    assert "only valid for insn and bb modes" in text
+
+
 def test_mcp_tool_call_advance_timeout_is_non_fatal() -> None:
     class TimeoutSession(FakeSession):
         def advance(self, mode, count=None, timeout=5.0):  # noqa: ANN001

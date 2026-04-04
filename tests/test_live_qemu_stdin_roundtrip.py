@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from dynamiq.errors import SessionTimeoutError
+from dynamiq.session import AnalysisSession
 
 
 def _compile_stdin_echo_binary(workdir: Path) -> Path:
@@ -38,19 +40,21 @@ def _compile_stdin_echo_binary(workdir: Path) -> Path:
     return binary
 
 
+def _resolve_x86_64_qemu() -> str:
+    local_qemu = Path(__file__).resolve().parents[1] / "tools" / "qemu" / "qemu-x86_64-instrumented"
+    if local_qemu.exists():
+        return str(local_qemu)
+    discovered = shutil.which("qemu-x86_64")
+    if discovered is None:
+        pytest.skip("qemu-x86_64 not found")
+    return discovered
+
+
 @pytest.mark.live_qemu
 def test_live_qemu_stdin_roundtrip(tmp_path: Path) -> None:
     binary = _compile_stdin_echo_binary(tmp_path)
     backend = QemuUserInstrumentedBackend()
-
-    local_qemu = Path(__file__).resolve().parents[1] / "tools" / "qemu" / "qemu-x86_64-instrumented"
-    if local_qemu.exists():
-        qemu_user_path = str(local_qemu)
-    else:
-        discovered = shutil.which("qemu-x86_64")
-        if discovered is None:
-            pytest.skip("qemu-x86_64 not found")
-        qemu_user_path = discovered
+    qemu_user_path = _resolve_x86_64_qemu()
 
     backend.start(
         target=str(binary),
@@ -81,3 +85,64 @@ def test_live_qemu_stdin_roundtrip(tmp_path: Path) -> None:
         assert "ECHO:ping" in seen
     finally:
         backend.close()
+
+
+@pytest.mark.live_qemu
+def test_live_session_advance_continue_stops_on_io_and_exit(tmp_path: Path) -> None:
+    binary = _compile_stdin_echo_binary(tmp_path)
+    session = AnalysisSession(backend=QemuUserInstrumentedBackend())
+    qemu_user_path = _resolve_x86_64_qemu()
+
+    try:
+        session.start(
+            target=str(binary),
+            args=[],
+            cwd=str(tmp_path),
+            qemu_config={
+                "launch": True,
+                "qemu_user_path": qemu_user_path,
+                "launch_connect_timeout": 5.0,
+            },
+        )
+    except SessionTimeoutError:
+        pytest.skip("live qemu RPC socket unavailable in this environment")
+
+    try:
+        first = session.advance(mode="continue", timeout=3.0)
+        assert first["result"]["mode"] == "continue"
+        assert first["result"]["completed"] is False
+        assert first["result"]["stop_reason"] == "io"
+        assert first["result"]["stdout_ready"] is False
+        assert first["result"]["stderr_ready"] is False
+        assert first["state"]["session_status"] == "paused"
+
+        session.write_stdin("ping\n")
+
+        second = session.advance(mode="continue", timeout=3.0)
+        assert second["result"]["mode"] == "continue"
+        assert second["result"]["completed"] is False
+        assert second["result"]["stop_reason"] == "io"
+        assert second["result"]["stdout_ready"] is True
+        assert second["state"]["session_status"] == "paused"
+
+        stdout = session.read_stdout(max_chars=4096)["result"]["data"]
+        assert "ECHO:ping" in stdout
+
+        third = session.advance(mode="continue", timeout=3.0)
+        assert third["result"]["mode"] == "continue"
+        assert third["result"]["completed"] is False
+        assert third["result"]["stop_reason"] == "exited"
+
+        deadline = time.time() + 3.0
+        final_state = None
+        while time.time() < deadline:
+            final_state = session.get_state()["state"]
+            if final_state.get("session_status") == "exited":
+                break
+            time.sleep(0.05)
+
+        assert isinstance(final_state, dict)
+        assert final_state.get("session_status") == "exited"
+        assert final_state.get("exit_code") == 0
+    finally:
+        session.close()
