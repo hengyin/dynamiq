@@ -4,6 +4,7 @@ import fcntl
 import os
 import pty
 import shutil
+import signal
 import subprocess
 import tty
 from dataclasses import dataclass, field
@@ -172,6 +173,7 @@ class QemuUserProcessRunner:
                 stdout=stdout_slave,
                 stderr=None if config.inherit_stderr else subprocess.PIPE,
                 text=False,
+                start_new_session=True,
             )
         except Exception:
             self._close_stdout_pty()
@@ -187,12 +189,9 @@ class QemuUserProcessRunner:
         if self._process is None:
             return
         if self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=2.0)
+            self._terminate_process_group(self._process, signal.SIGTERM, timeout=2.0)
+            if self._process.poll() is None:
+                self._terminate_process_group(self._process, signal.SIGKILL, timeout=2.0)
         self._close_stdout_pty()
         self._process = None
         self._config = None
@@ -300,3 +299,25 @@ class QemuUserProcessRunner:
     def _set_nonblocking(fd: int) -> None:
         flags = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    @staticmethod
+    def _terminate_process_group(
+        process: subprocess.Popen[bytes],
+        sig: signal.Signals,
+        timeout: float,
+    ) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            return
+        except OSError:
+            if sig == signal.SIGKILL:
+                process.kill()
+            else:
+                process.terminate()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass

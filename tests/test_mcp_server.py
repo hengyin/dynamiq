@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import atexit
 import json
+import signal
 
 from dynamiq.errors import InvalidStateError, SessionTimeoutError
-from dynamiq.mcp_server import InteractiveAnalysisMcpServer
+from dynamiq.mcp_server import InteractiveAnalysisMcpServer, _install_shutdown_hooks
 
 
 class FakeSession:
@@ -118,6 +120,36 @@ class FakeSession:
             },
         }
 
+    def recent_path_constraints(self, limit=16):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "recent_path_constraints",
+            "result": {
+                "constraints": [
+                    {
+                        "label": "0x12",
+                        "pc": "0x401050",
+                        "taken": True,
+                        "expression": "ICmp:eq(input(0), 0x41)",
+                        "op": "ICmp",
+                    }
+                ],
+                "count": 1,
+                "truncated": False,
+            },
+        }
+
+    def path_constraint_closure(self, label):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "path_constraint_closure",
+            "result": {
+                "root": {"label": label, "expression": "ICmp:eq(input(0), 0x41)", "op": "ICmp"},
+                "constraints": [{"label": "0x6", "expression": "ICmp:ult(input(0), 0x80)", "op": "ICmp"}],
+                "count": 1,
+            },
+        }
+
     def list_memory_maps(self):
         return {"ok": True, "command": "list_memory_maps", "result": {"maps": {"regions": []}}}
 
@@ -229,6 +261,8 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "symbolize_mem" in names
     assert "symbolize_reg" in names
     assert "expr" in names
+    assert "recent_path_constraints" in names
+    assert "path_constraint_closure" in names
     assert "bt" in names
     assert "bp_list" in names
     assert "stdin" not in names
@@ -293,6 +327,46 @@ def test_mcp_tool_call_expr() -> None:
     assert result["isError"] is False
     assert result["structuredContent"]["result"]["label"] == "0x3"
     assert "Add:i64" in result["structuredContent"]["result"]["expression"]
+
+
+def test_mcp_tool_call_recent_path_constraints() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 33,
+            "method": "tools/call",
+            "params": {
+                "name": "recent_path_constraints",
+                "arguments": {"limit": 4},
+            },
+        }
+    )
+    assert response is not None
+    result = response["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["command"] == "recent_path_constraints"
+    assert result["structuredContent"]["result"]["constraints"][0]["label"] == "0x12"
+
+
+def test_mcp_tool_call_path_constraint_closure() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 34,
+            "method": "tools/call",
+            "params": {
+                "name": "path_constraint_closure",
+                "arguments": {"label": "0x12"},
+            },
+        }
+    )
+    assert response is not None
+    result = response["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["command"] == "path_constraint_closure"
+    assert result["structuredContent"]["result"]["root"]["label"] == "0x12"
 
 
 def test_mcp_tool_call_symbolize_register() -> None:
@@ -467,6 +541,19 @@ def test_mcp_server_shutdown_closes_active_session() -> None:
     )
     server.shutdown()
     assert fake.close_calls == 1
+
+
+def test_install_shutdown_hooks_registers_atexit_and_signal_handlers(monkeypatch) -> None:
+    server = InteractiveAnalysisMcpServer(session_factory=FakeSession)
+    registered = {"atexit": None, "signals": []}
+
+    monkeypatch.setattr(atexit, "register", lambda fn: registered.__setitem__("atexit", fn))
+    monkeypatch.setattr(signal, "signal", lambda signum, handler: registered["signals"].append((signum, handler)))
+
+    _install_shutdown_hooks(server)
+
+    assert registered["atexit"] == server.shutdown
+    assert [signum for signum, _handler in registered["signals"]] == [signal.SIGINT, signal.SIGTERM]
 
 
 def test_mcp_tool_call_unknown_tool_returns_error() -> None:

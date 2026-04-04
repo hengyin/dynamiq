@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -120,3 +121,21 @@ def test_qemu_user_process_runner_reads_stdout_and_stderr_nonblocking() -> None:
     assert out["eof"] is True
     assert err["eof"] is True
     runner.close()
+
+
+def test_qemu_user_process_runner_uses_process_group_cleanup() -> None:
+    runner = QemuUserProcessRunner()
+    config = QemuUserLaunchConfig(
+        qemu_user_path="/bin/sh",
+        target="-c",
+        args=["sleep 30 & wait"],
+        cwd=None,
+    )
+    process = runner.start(config)
+
+    assert process.poll() is None
+    assert os.getsid(process.pid) == process.pid
+
+    runner.close()
+
+    assert process.poll() is not None

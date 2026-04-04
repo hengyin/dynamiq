@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -234,6 +236,12 @@ class InteractiveAnalysisMcpServer:
             if name == "expr":
                 label = self._parse_nonempty_string(arguments, "label")
                 return self._tool_ok(self._ensure_session().get_symbolic_expression(label=label))
+            if name == "recent_path_constraints":
+                limit = self._parse_int(arguments, "limit", default=16, minimum=1)
+                return self._tool_ok(self._ensure_session().recent_path_constraints(limit=limit))
+            if name == "path_constraint_closure":
+                label = self._parse_nonempty_string(arguments, "label")
+                return self._tool_ok(self._ensure_session().path_constraint_closure(label=label))
             if name == "maps":
                 return self._tool_ok(self._ensure_session().list_memory_maps())
             if name == "trace_start":
@@ -820,6 +828,37 @@ class InteractiveAnalysisMcpServer:
                 },
             ),
             ToolSpec(
+                name="recent_path_constraints",
+                description="List the newest path-condition labels recorded in this session.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 16,
+                            "description": "Maximum number of recent path constraints to return.",
+                        }
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="path_constraint_closure",
+                description="Return the earlier constraints that a branch-condition label depends on.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": "Branch-condition symbolic label as a hex string.",
+                        }
+                    },
+                    "required": ["label"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
                 name="maps",
                 description="List current memory map regions.",
                 input_schema={"type": "object", "properties": {}, "additionalProperties": False},
@@ -1072,11 +1111,23 @@ def run_stdio(server: InteractiveAnalysisMcpServer) -> int:
     return 0
 
 
+def _install_shutdown_hooks(server: InteractiveAnalysisMcpServer) -> None:
+    atexit.register(server.shutdown)
+
+    def _handle_signal(signum: int, _frame: object) -> None:
+        server.shutdown()
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, _handle_signal)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Interactive Dynamic Analysis MCP server (stdio)")
     parser.add_argument("--transport", choices=["stdio"], default="stdio")
     parser.parse_args()
     server = InteractiveAnalysisMcpServer()
+    _install_shutdown_hooks(server)
     return run_stdio(server)
 
 

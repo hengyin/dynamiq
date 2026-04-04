@@ -80,9 +80,10 @@ Dynamiq provides **two complementary interfaces** for analyzing target programs:
 13. Immediately verify the result with `mem` or `regs` after execution reaches a point where the guest has consumed the stdin bytes. Expect symbolic metadata in `mem.result.symbolic_bytes` or `regs.result.symbolic_registers`.
 14. After finding a non-zero symbolic label in `regs` or `mem`, use `expr` to inspect the symbolic expression for that label.
 15. Use the older manual breakpoint-plus-`symbolize_mem` workflow only when the data source is not stdin, or when you need to symbolize a later derived buffer rather than the original stdin stream.
-16. For path-constraint reasoning in the scripting API, first call `recent_path_constraints(limit=...)`, then `path_constraint_closure(label)` for the label you want to explain.
-17. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
-18. `close` at end.
+16. After symbolic input has actually influenced control flow, call `recent_path_constraints` to discover the newest path-condition labels. Good trigger points are: after a breakpoint at an interesting branch target, after `advance {"mode":"continue"}` stops somewhere beyond a comparison or branch, or during a terminal pause on exit/crash. Do not query path constraints before the symbolic bytes have been consumed and exercised.
+17. Once you have a recent label, call `path_constraint_closure(label)` to recover the earlier constraints that the newest condition depends on.
+18. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
+19. `close` at end.
 
 Concrete stdin pattern:
 1. `start` the target.
@@ -91,6 +92,15 @@ Concrete stdin pattern:
 4. `stdout`, `stderr`, `state`, `regs`, or `mem` to confirm how the input affected execution and whether symbolic labels appeared.
 5. `expr {"label":"<first_nonzero_label>"}` if you need the expression for one symbolic byte or word.
 6. `advance {"mode":"continue"}` to keep running.
+
+Concrete path-constraint pattern:
+1. Send symbolic stdin with `send_line {"line":"AAAA", "symbolic": true}` or `send_bytes {"data":"AAAA", "symbolic": true}`.
+2. `advance {"mode":"continue"}` until the target has consumed that input and reached an interesting branch, breakpoint, or terminal pause.
+3. Optionally confirm symbolic influence first with `mem`, `regs`, or `expr`.
+4. Call `recent_path_constraints {"limit": 5}`. If it returns no constraints, keep running; the symbolic input has not influenced control flow yet.
+5. Pick the newest label from `constraints[0].label`.
+6. Call `path_constraint_closure {"label":"<newest_label>"}` to recover the earlier constraints that explain why that branch was taken.
+7. Use this after each interesting stop, especially after branch-target breakpoints and exit/crash terminal pauses.
 
 Trace file mode:
 - If live event streaming is unstable, set `start.qemu_config.instrumentation_trace_file_path` and use file-backed tracing via the same `trace_*` tools.
@@ -168,7 +178,8 @@ Use a two-loop strategy: breadth first, then depth on hotspots.
 - For stack memory reads, call `regs` first and use live `rsp` from that result.
 - For stdin-controlled input, prefer `send_line` / `send_bytes` / `send_file` with `symbolic: true` instead of manual post-`read` buffer symbolization. Fall back to `symbolize_mem` only for non-stdin sources or derived buffers.
 - For symbolic reasoning, discover labels through `regs` or `mem` first, then call `expr` on the specific non-zero label you want to inspect.
-- For path-condition reasoning in scripting, use `recent_path_constraints()` to choose a label, then `path_constraint_closure(label)` to see the earlier constraints it depends on.
+- For path-constraint reasoning, do not query immediately after sending symbolic input. First let execution advance until the symbolic bytes have been consumed and a branch or terminal condition has been reached. Then call `recent_path_constraints()`/`recent_path_constraints {"limit": ...}` and use the newest returned label with `path_constraint_closure(label)`.
+- A good default is: symbolic stdin -> `advance` -> `recent_path_constraints` -> `path_constraint_closure`.
 - For call-chain context, call `bt` after a breakpoint hit before deeper `disasm`/`mem`.
 - Do not reuse addresses from previous sessions.
 - If tool output indicates malformed arguments, fix input shape before retrying.
