@@ -156,6 +156,7 @@ class QemuUserInstrumentedBackend:
                         self._wait_for_socket_path(
                             socket_path,
                             timeout=float(qemu_config.get("launch_connect_timeout", 5.0)),
+                            socket_kind="instrumentation event",
                         )
                 if self._instrumentation_rpc is not None:
                     socket_path = getattr(self._instrumentation_rpc, "socket_path", None)
@@ -163,6 +164,7 @@ class QemuUserInstrumentedBackend:
                         self._wait_for_socket_path(
                             socket_path,
                             timeout=float(qemu_config.get("launch_connect_timeout", 5.0)),
+                            socket_kind="instrumentation rpc",
                         )
             try:
                 if self._controller is not None:
@@ -807,15 +809,25 @@ class QemuUserInstrumentedBackend:
             if name in caps and isinstance(caps[name], bool):
                 setattr(self._capabilities, name, caps[name])
 
-    @staticmethod
-    def _wait_for_socket_path(socket_path: str, timeout: float) -> None:
+    def _raise_launch_socket_timeout(self, socket_path: str, timeout: float, socket_kind: str) -> None:
+        message = (
+            f"start timed out waiting for {socket_kind} socket after {timeout:.1f}s: {socket_path}"
+        )
+        process_summary = None
+        if self._process_runner is not None:
+            process_summary = self._process_runner.exited_summary()
+        if process_summary is not None:
+            raise SessionTimeoutError(f"{message}; {process_summary}")
+        raise SessionTimeoutError(message)
+
+    def _wait_for_socket_path(self, socket_path: str, timeout: float, socket_kind: str = "instrumentation") -> None:
         deadline = time.time() + timeout
         path = Path(socket_path)
         while time.time() < deadline:
             if path.exists():
                 return
             time.sleep(0.05)
-        raise SessionTimeoutError(f"timed out waiting for socket: {socket_path}")
+        self._raise_launch_socket_timeout(socket_path, timeout, socket_kind)
 
     def _sync_process_state(self) -> None:
         if self._process_runner is None:

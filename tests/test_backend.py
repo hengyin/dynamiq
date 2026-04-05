@@ -861,9 +861,9 @@ def test_backend_start_cleans_up_partial_launch_on_socket_timeout(monkeypatch) -
         process_runner=runner,
     )
 
-    def _raise_timeout(socket_path: str, timeout: float) -> None:
-        del socket_path, timeout
-        raise SessionTimeoutError("timed out waiting for socket")
+    def _raise_timeout(socket_path: str, timeout: float, socket_kind: str = "instrumentation") -> None:
+        del socket_path, timeout, socket_kind
+        raise SessionTimeoutError("start timed out waiting for instrumentation rpc socket after 5.0s")
 
     monkeypatch.setattr(
         QemuUserInstrumentedBackend,
@@ -871,7 +871,7 @@ def test_backend_start_cleans_up_partial_launch_on_socket_timeout(monkeypatch) -
         staticmethod(_raise_timeout),
     )
 
-    with pytest.raises(SessionTimeoutError):
+    with pytest.raises(SessionTimeoutError, match="start timed out waiting for instrumentation rpc socket"):
         backend.start(
             "target.bin",
             [],
@@ -902,10 +902,10 @@ def test_backend_start_fails_when_event_socket_missing(monkeypatch) -> None:  # 
         process_runner=runner,
     )
 
-    def _wait_selective(socket_path: str, timeout: float) -> None:
+    def _wait_selective(socket_path: str, timeout: float, socket_kind: str = "instrumentation") -> None:
         del timeout
         if socket_path.endswith("events.sock"):
-            raise SessionTimeoutError("timed out waiting for socket: events")
+            raise SessionTimeoutError(f"start timed out waiting for {socket_kind} socket after 5.0s: {socket_path}")
         return None
 
     monkeypatch.setattr(
@@ -916,7 +916,7 @@ def test_backend_start_fails_when_event_socket_missing(monkeypatch) -> None:  # 
     monkeypatch.setattr(instrumentation, "socket_path", "/tmp/ia/events.sock", raising=False)
     monkeypatch.setattr(rpc, "socket_path", "/tmp/ia/rpc.sock", raising=False)
 
-    with pytest.raises(SessionTimeoutError):
+    with pytest.raises(SessionTimeoutError, match="instrumentation event socket"):
         backend.start(
             "target.bin",
             [],
@@ -932,6 +932,23 @@ def test_backend_start_fails_when_event_socket_missing(monkeypatch) -> None:  # 
     state = backend.get_state()
     assert state["session_status"] == "closed"
     assert runner.closed is True
+
+
+def test_backend_start_timeout_includes_qemu_exit_summary() -> None:
+    runner = FakeProcessRunner()
+    runner.summary = "qemu-user exited with code 1; stderr: bind rpc socket failed"
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(),
+        process_runner=runner,
+    )
+
+    with pytest.raises(
+        SessionTimeoutError,
+        match=r"start timed out waiting for instrumentation rpc socket after 0.2s: /tmp/ia/rpc\.sock; qemu-user exited with code 1; stderr: bind rpc socket failed",
+    ):
+        backend._raise_launch_socket_timeout("/tmp/ia/rpc.sock", 0.2, "instrumentation rpc")
 
 
 def test_backend_trace_file_mode_reads_events(tmp_path: Path) -> None:
