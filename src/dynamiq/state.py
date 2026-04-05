@@ -25,6 +25,8 @@ class ExecutionState:
     pc: str | None = None
     current_thread_id: str | None = None
     registers: dict[str, str] = field(default_factory=dict)
+    symbolic_registers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    recent_symbolic_pcs: list[dict[str, Any]] = field(default_factory=list)
     memory_maps: list[dict[str, Any]] = field(default_factory=list)
     last_snapshot_id: str | None = None
     last_event_id: str | None = None
@@ -67,6 +69,8 @@ class ExecutionState:
             "pc": self.pc,
             "current_thread_id": self.current_thread_id,
             "registers": dict(self.registers),
+            "symbolic_registers": dict(self.symbolic_registers),
+            "recent_symbolic_pcs": list(self.recent_symbolic_pcs),
             "memory_maps": list(self.memory_maps),
             "last_snapshot_id": self.last_snapshot_id,
             "last_event_id": self.last_event_id,

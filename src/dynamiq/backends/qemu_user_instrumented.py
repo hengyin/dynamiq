@@ -47,6 +47,9 @@ class QemuUserInstrumentedBackend:
             "launched_qemu_user_path": None,
             "rpc_protocol_version": None,
             "rpc_capabilities": {},
+            "registers": {},
+            "symbolic_registers": {},
+            "recent_symbolic_pcs": [],
             "trace_active": False,
             "trace_kind": None,
             "trace_file": None,
@@ -388,6 +391,7 @@ class QemuUserInstrumentedBackend:
         self._require_started()
         snapshot = RegisterSnapshot.from_rpc_result(self._rpc_request("get_registers", {"names": list(names or [])}))
         self._state["registers"] = snapshot.registers
+        self._state["symbolic_registers"] = snapshot.symbolic_registers
         pc = snapshot.registers.get("pc") or snapshot.registers.get("rip") or snapshot.registers.get("eip")
         if pc is not None:
             self._state["pc"] = pc
@@ -418,7 +422,24 @@ class QemuUserInstrumentedBackend:
 
     def recent_path_constraints(self, limit: int = 16) -> dict[str, Any]:
         self._require_started()
-        return self._response(self._rpc_request("get_recent_path_constraints", {"limit": limit}))
+        result = self._rpc_request("get_recent_path_constraints", {"limit": limit})
+        constraints = result.get("constraints")
+        if isinstance(constraints, list):
+            self._state["recent_symbolic_pcs"] = [
+                {
+                    "pc": item.get("pc"),
+                    "label": item.get("label"),
+                    "taken": item.get("taken"),
+                    "op": item.get("op"),
+                }
+                for item in constraints
+                if isinstance(item, dict)
+                and isinstance(item.get("pc"), str)
+                and isinstance(item.get("label"), str)
+            ]
+        else:
+            self._state["recent_symbolic_pcs"] = []
+        return self._response(result)
 
     def path_constraint_closure(self, label: str) -> dict[str, Any]:
         self._require_started()
@@ -649,6 +670,9 @@ class QemuUserInstrumentedBackend:
         self._state["instrumentation_rpc_socket_path"] = None
         self._state["rpc_protocol_version"] = None
         self._state["rpc_capabilities"] = {}
+        self._state["registers"] = {}
+        self._state["symbolic_registers"] = {}
+        self._state["recent_symbolic_pcs"] = []
         self._state["last_rpc_method"] = None
         self._state["last_rpc_timeout"] = None
         self._state["last_rpc_params"] = {}

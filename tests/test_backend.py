@@ -1150,6 +1150,28 @@ def test_backend_recent_path_constraints_uses_rpc_channel() -> None:
     assert rpc.requests[0] == ("get_recent_path_constraints", {"limit": 4})
 
 
+def test_backend_state_surfaces_symbolic_registers_and_recent_symbolic_pcs() -> None:
+    instrumentation = FakeInstrumentationClient()
+    rpc = FakeInstrumentationRpcClient(instrumentation)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=FakeQmpClient(),
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+
+    backend.get_registers(["rax", "rbx", "rip"])
+    backend.recent_path_constraints(limit=4)
+
+    state = backend.get_state()
+
+    assert state["symbolic_registers"]["rbx"] == {"symbolic": True, "label": "0x20"}
+    assert state["recent_symbolic_pcs"] == [
+        {"pc": "0x401020", "label": "0x12", "taken": True, "op": "ICmp"},
+        {"pc": "0x401010", "label": "0x6", "taken": True, "op": "ICmp"},
+    ]
+
+
 def test_backend_path_constraint_closure_uses_rpc_channel() -> None:
     instrumentation = FakeInstrumentationClient()
     rpc = FakeInstrumentationRpcClient(instrumentation)
