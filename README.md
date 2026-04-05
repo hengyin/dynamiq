@@ -173,7 +173,11 @@ PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server
 - `trace_start`, `trace_stop`, `trace_status`, `trace_get`
 - `bp_add`, `bp_del`, `bp_list`, `bp_clear`
 
-`regs` and `mem` include symbolic metadata when the backend exposes it:
+`state` is the main summary view for agents. After you call `regs` or `recent_path_constraints`, it also surfaces cached symbolic summaries:
+- `state.result.symbolic_registers`
+- `state.result.recent_symbolic_pcs`
+
+`regs` and `mem` still expose the full detailed symbolic metadata when the backend provides it:
 - `regs.result.symbolic_registers`
 - `mem.result.symbolic_bytes`
 
@@ -183,13 +187,16 @@ For stdin-driven input, prefer the built-in queued stdin flow: `send_bytes`, `se
 Use the older manual breakpoint-plus-`symbolize_mem` workflow only when the data source is not stdin, or when you need to symbolize some derived buffer instead of the original stdin stream.
 
 For symbolic path reasoning in the scripting API, use:
-- `session.recent_path_constraints(limit=...)` to discover recent path-condition labels and whether each branch was taken
+- `session.get_state()` first to inspect `state["recent_symbolic_pcs"]` and `state["symbolic_registers"]`
+- `session.recent_path_constraints(limit=...)` to discover recent path-condition labels, whether each branch was taken, and to refresh `recent_symbolic_pcs`
 - `session.path_constraint_closure(label)` to inspect the chosen path-condition plus the nested earlier constraints it depends on, including their `taken` directions
 
 Typical flow:
 ```python
+state = session.get_state()["state"]
+latest = state["recent_symbolic_pcs"][0]
+label = latest["label"]
 recent = session.recent_path_constraints(limit=8)
-label = recent["result"]["constraints"][0]["label"]
 expr = session.get_symbolic_expression(label)
 closure = session.path_constraint_closure(label)
 ```

@@ -375,6 +375,12 @@ class ScriptSession:
         """
         Get complete session state snapshot.
 
+        The state view is the main summary surface for autonomous workflows. In
+        addition to lifecycle and PC fields, it includes cached symbolic
+        summaries such as:
+        - ``symbolic_registers`` after ``get_registers()``
+        - ``recent_symbolic_pcs`` after ``recent_path_constraints()``
+
         Returns:
             Response dict with full ExecutionState.
         """
@@ -858,7 +864,7 @@ class ScriptSession:
 
     @property
     def state(self) -> dict[str, Any]:
-        """Get current ExecutionState as dict."""
+        """Get current ExecutionState as dict, including cached symbolic summaries."""
         return self._session.state.to_dict()
 
     @property

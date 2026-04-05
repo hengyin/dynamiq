@@ -147,7 +147,21 @@ class MockBackend(BackendAdapter):
         self.call_history.append("get_state")
         return {
             "ok": True,
-            "state": {"session_status": "paused", "pc": "0x401000"},
+            "state": {
+                "session_status": "paused",
+                "pc": "0x401000",
+                "symbolic_registers": {
+                    "rbx": {"symbolic": True, "label": "0x20"},
+                },
+                "recent_symbolic_pcs": [
+                    {
+                        "pc": "0x401020",
+                        "label": "0x12",
+                        "taken": True,
+                        "op": "ICmp",
+                    }
+                ],
+            },
             "result": {},
         }
 
@@ -516,6 +530,20 @@ class TestScriptSessionPropertyAccessors:
         assert isinstance(state, dict)
         # Should have ExecutionState fields
         assert "session_status" in state or len(state) == 0
+        assert "symbolic_registers" in state
+        assert "recent_symbolic_pcs" in state
+
+    def test_get_state_exposes_symbolic_summary_fields(self):
+        """Test get_state() exposes symbolic-register and recent-PC summaries."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.get_state()
+
+        assert result["state"]["symbolic_registers"]["rbx"] == {"symbolic": True, "label": "0x20"}
+        assert result["state"]["recent_symbolic_pcs"] == [
+            {"pc": "0x401020", "label": "0x12", "taken": True, "op": "ICmp"}
+        ]
 
     def test_pc_property(self):
         """Test pc property returns program counter."""

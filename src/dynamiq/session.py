@@ -766,7 +766,10 @@ class AnalysisSession:
     def get_state(self) -> dict[str, Any]:
         self.state.capabilities = self.backend.capabilities()
         backend_state = self.backend.get_state()
-        self._merge_state(backend_state)
+        if isinstance(backend_state, dict) and isinstance(backend_state.get("state"), dict):
+            self._merge_state(backend_state["state"])
+        else:
+            self._merge_state(backend_state)
         return self._response("get_state", self.state.to_dict())
 
     def capabilities(self) -> dict[str, Any]:
