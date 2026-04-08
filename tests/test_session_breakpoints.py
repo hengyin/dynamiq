@@ -204,6 +204,43 @@ class FakeBackendContinueTimeout(FakeBackend):
         return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
 
 
+class FakeBackendContinueTerminalPause(FakeBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.running = False
+
+    def resume(self, timeout):  # noqa: ANN001
+        del timeout
+        self.running = True
+        return {"state": {"session_status": "running"}, "result": {}}
+
+    def get_state(self):
+        if self.running:
+            self.running = False
+            return {
+                "session_status": "paused",
+                "pc": self.pc_seq[self.idx],
+                "pending_termination": True,
+                "termination_kind": "exit",
+                "capabilities": self.capabilities(),
+            }
+        return {
+            "session_status": "paused",
+            "pc": self.pc_seq[self.idx],
+            "pending_termination": True,
+            "termination_kind": "exit",
+            "capabilities": self.capabilities(),
+        }
+
+    def read_stdout(self, cursor=0, max_chars=4096):  # noqa: ANN001
+        del max_chars
+        return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
+
+    def read_stderr(self, cursor=0, max_chars=4096):  # noqa: ANN001
+        del max_chars
+        return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
+
+
 class FakeBackendContinueSilentIo(FakeBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -488,6 +525,22 @@ def test_session_advance_continue_reports_exited_without_io() -> None:
     assert result["result"]["completed"] is False
     assert result["result"]["stop_reason"] == "exited"
     assert result["state"]["session_status"] == "exited"
+
+
+def test_session_advance_continue_reports_terminal_pause_before_exit() -> None:
+    backend = FakeBackendContinueTerminalPause()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+
+    result = session.advance(mode="continue", timeout=1.0)
+
+    assert result["result"]["mode"] == "continue"
+    assert result["result"]["completed"] is False
+    assert result["result"]["stop_reason"] == "termination_pending"
+    assert result["result"]["termination_kind"] == "exit"
+    assert result["state"]["session_status"] == "paused"
+    assert result["state"]["pending_termination"] is True
+    assert result["state"]["termination_kind"] == "exit"
 
 
 def test_session_advance_continue_classifies_silent_pause_as_io() -> None:

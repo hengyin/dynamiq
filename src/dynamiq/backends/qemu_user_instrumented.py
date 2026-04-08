@@ -50,6 +50,8 @@ class QemuUserInstrumentedBackend:
             "trace_active": False,
             "trace_kind": None,
             "trace_file": None,
+            "pending_termination": False,
+            "termination_kind": None,
             "last_rpc_method": None,
             "last_rpc_timeout": None,
             "last_rpc_params": {},
@@ -594,6 +596,7 @@ class QemuUserInstrumentedBackend:
                 status = None
             if status and "status" in status:
                 self._state["session_status"] = status["status"]
+                self._apply_runtime_status(status)
                 self._apply_trace_status(status)
         elif self._state.get("session_status") != "exited" and self._controller is not None and self._started:
             try:
@@ -631,6 +634,8 @@ class QemuUserInstrumentedBackend:
         self._capabilities = self._default_capabilities()
         self._started = False
         self._state["session_status"] = "closed"
+        self._state["pending_termination"] = False
+        self._state["termination_kind"] = None
         self._state["launched_qemu_user_path"] = None
         self._state["instrumentation_rpc_socket_path"] = None
         self._state["rpc_protocol_version"] = None
@@ -755,6 +760,7 @@ class QemuUserInstrumentedBackend:
         try:
             result = rpc.request(method, params, timeout=timeout)
             self._apply_trace_status(result)
+            self._apply_runtime_status(result)
             history_entry["ok"] = True
             status = result.get("status")
             if isinstance(status, str):
@@ -816,6 +822,7 @@ class QemuUserInstrumentedBackend:
         before_status = self._state.get("session_status")
         before_pc = self._state.get("pc")
         self._state["session_status"] = "exited"
+        self._state["pending_termination"] = False
         if returncode < 0:
             self._state["exit_signal"] = f"SIG{-returncode}"
             self._state["exit_code"] = None
@@ -825,6 +832,15 @@ class QemuUserInstrumentedBackend:
             self._state["exit_signal"] = None
             self._state["stop_reason"] = "exited"
         self._record_stop_transition("process_exit", before_status, before_pc)
+
+    def _apply_runtime_status(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        if "pending_termination" in payload:
+            self._state["pending_termination"] = bool(payload.get("pending_termination"))
+        if "termination_kind" in payload:
+            termination_kind = payload.get("termination_kind")
+            self._state["termination_kind"] = termination_kind if isinstance(termination_kind, str) else None
 
     def _apply_trace_status(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):

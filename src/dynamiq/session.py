@@ -235,9 +235,14 @@ class AnalysisSession:
                     "stop_reason": stop_reason,
                 }
                 if stop_reason == "paused" and self.state.session_status in {"paused", "idle"}:
-                    result["stop_reason"] = "io"
-                    result["stdout_ready"] = False
-                    result["stderr_ready"] = False
+                    if self.state.pending_termination:
+                        result["stop_reason"] = "termination_pending"
+                        if isinstance(self.state.termination_kind, str):
+                            result["termination_kind"] = self.state.termination_kind
+                    else:
+                        result["stop_reason"] = "io"
+                        result["stdout_ready"] = False
+                        result["stderr_ready"] = False
                 if isinstance(self.state.pc, str):
                     result["pc"] = self.state.pc
                 return self._response("advance", result)
