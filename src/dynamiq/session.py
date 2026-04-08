@@ -196,36 +196,11 @@ class AnalysisSession:
             payload.update({"mode": "continue", "completed": False, "stop_reason": "breakpoint"})
             return self._response("advance", payload)
 
-        stdout_cursor = self._stream_cursor("stdout")
-        stderr_cursor = self._stream_cursor("stderr")
         self._forward("advance", self.backend.resume(timeout))
         deadline = time.time() + timeout
         while time.time() < deadline:
             state_payload = self.backend.get_state()
             self._merge_state(state_payload)
-
-            stdout_probe = self.backend.read_stdout(cursor=stdout_cursor, max_chars=1)
-            stderr_probe = self.backend.read_stderr(cursor=stderr_cursor, max_chars=1)
-            stdout_data = stdout_probe.get("result", {}).get("data", "")
-            stderr_data = stderr_probe.get("result", {}).get("data", "")
-            if stdout_data or stderr_data:
-                if self.state.session_status == "running":
-                    pause_result = self._forward("pause", self.backend.pause(timeout=min(1.0, max(0.1, deadline - time.time()))))
-                    result = dict(pause_result.get("result", {}))
-                else:
-                    result = {}
-                result.update(
-                    {
-                        "mode": "continue",
-                        "completed": False,
-                        "stop_reason": "io",
-                        "stdout_ready": bool(stdout_data),
-                        "stderr_ready": bool(stderr_data),
-                    }
-                )
-                if isinstance(self.state.pc, str):
-                    result.setdefault("pc", self.state.pc)
-                return self._response("advance", result)
 
             if self.state.session_status in {"paused", "idle", "exited", "closed"}:
                 stop_reason = self._infer_stop_reason({}, self._read_live_pc(), completed=False)

@@ -615,14 +615,19 @@ class QemuUserInstrumentedBackend:
         return self._capabilities.to_dict()
 
     def close(self) -> None:
-        if self._instrumentation is not None:
-            self._instrumentation.close()
-        if self._instrumentation_rpc is not None:
-            self._instrumentation_rpc.close()
-        if self._controller is not None:
-            self._controller.close()
-        if self._process_runner is not None:
-            self._process_runner.close()
+        cleanup_actions = [
+            self._process_runner.close if self._process_runner is not None else None,
+            self._instrumentation.close if self._instrumentation is not None else None,
+            self._instrumentation_rpc.close if self._instrumentation_rpc is not None else None,
+            self._controller.close if self._controller is not None else None,
+        ]
+        for action in cleanup_actions:
+            if action is None:
+                continue
+            try:
+                action()
+            except Exception:
+                pass
         if self._auto_socket_root is not None:
             shutil.rmtree(self._auto_socket_root, ignore_errors=True)
             self._auto_socket_root = None

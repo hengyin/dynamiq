@@ -114,6 +114,15 @@ class FakeInstrumentationClient:
         return None
 
 
+class RaisingClose:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        raise RuntimeError("close failed")
+
+
 class FakeInstrumentationRpcClient:
     def __init__(self, instrumentation_client: FakeInstrumentationClient | None = None) -> None:
         self.connected = False
@@ -813,6 +822,34 @@ def test_backend_start_launch_auto_configures_rpc_path_only() -> None:
 
     backend.close()
     assert not Path(rpc_socket).parent.exists()
+
+
+def test_backend_close_still_reaps_process_runner_when_other_cleanup_fails(tmp_path: Path) -> None:
+    runner = FakeProcessRunner()
+    instrumentation = RaisingClose()
+    instrumentation_rpc = RaisingClose()
+    qmp = RaisingClose()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=qmp,
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=instrumentation_rpc,
+        process_runner=runner,
+    )
+    auto_socket_root = tmp_path / "rpc-root"
+    auto_socket_root.mkdir()
+
+    backend._auto_socket_root = auto_socket_root
+    backend._started = True
+    backend._state["session_status"] = "paused"
+
+    backend.close()
+
+    assert runner.closed is True
+    assert instrumentation.closed is True
+    assert instrumentation_rpc.closed is True
+    assert qmp.closed is True
+    assert not auto_socket_root.exists()
+    assert backend.get_state()["session_status"] == "closed"
 
 
 def test_backend_start_cleans_up_partial_launch_on_socket_timeout(monkeypatch) -> None:  # noqa: ANN001

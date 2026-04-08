@@ -154,6 +154,7 @@ class FakeBackendContinueIo(FakeBackend):
     def __init__(self) -> None:
         super().__init__()
         self.stdout_reads = 0
+        self.state_reads = 0
         self.running = False
 
     def resume(self, timeout):  # noqa: ANN001
@@ -168,17 +169,16 @@ class FakeBackendContinueIo(FakeBackend):
         return {"state": {"session_status": "paused"}, "result": {}}
 
     def get_state(self):
+        self.state_reads += 1
+        if self.running and self.state_reads >= 2:
+            self.running = False
         status = "running" if self.running else "paused"
         return {"session_status": status, "pc": self.pc_seq[self.idx], "capabilities": self.capabilities()}
 
     def read_stdout(self, cursor=0, max_chars=4096):  # noqa: ANN001
         del max_chars
         self.stdout_reads += 1
-        if cursor == 0:
-            return {"state": {}, "result": {"data": "", "cursor": 1, "eof": False}}
-        if self.stdout_reads >= 2:
-            return {"state": {}, "result": {"data": ">", "cursor": cursor + 1, "eof": False}}
-        return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
+        return {"state": {}, "result": {"data": ">", "cursor": cursor + 1, "eof": False}}
 
 
 class FakeBackendContinueTimeout(FakeBackend):
@@ -501,7 +501,7 @@ def test_session_advance_rejects_nonpositive_count_for_insn() -> None:
         session.advance(mode="insn", count=0, timeout=1.0)
 
 
-def test_session_advance_continue_pauses_on_io() -> None:
+def test_session_advance_continue_ignores_stdout_until_real_pause() -> None:
     backend = FakeBackendContinueIo()
     session = AnalysisSession(backend=backend)
     session.state.session_status = "paused"
@@ -510,8 +510,9 @@ def test_session_advance_continue_pauses_on_io() -> None:
 
     assert result["result"]["mode"] == "continue"
     assert result["result"]["stop_reason"] == "io"
-    assert result["result"]["stdout_ready"] is True
-    assert backend.pause_calls == 1
+    assert result["result"]["stdout_ready"] is False
+    assert result["result"]["stderr_ready"] is False
+    assert backend.pause_calls == 0
 
 
 def test_session_advance_continue_reports_exited_without_io() -> None:
