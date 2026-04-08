@@ -94,6 +94,7 @@ with ScriptSession(target="/path/to/target", auto_start=True) as session:
     expr = session.get_symbolic_expression(first_symbolic)
     recent = session.recent_path_constraints(limit=8)
     closure = session.path_constraint_closure(recent["result"]["constraints"][0]["label"])
+    assert closure["result"]["root"]["taken"] is True
 ```
 
 ### 4. Auto-Detection (Zero Configuration)

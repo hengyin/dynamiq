@@ -245,6 +245,7 @@ class FakeInstrumentationRpcClient:
                     "expression": "ICmp[eq]:bool(input(0):i8, 0x42:i8)",
                     "op": "ICmp",
                     "size": 1,
+                    "taken": True,
                 },
                 "constraints": [
                     {
@@ -252,6 +253,7 @@ class FakeInstrumentationRpcClient:
                         "expression": "ICmp[eq]:bool(input(0):i8, 0x41:i8)",
                         "op": "ICmp",
                         "size": 1,
+                        "taken": True,
                     }
                 ],
                 "count": 1,
@@ -1107,7 +1109,9 @@ def test_backend_path_constraint_closure_uses_rpc_channel() -> None:
     result = backend.path_constraint_closure("0x12")
 
     assert result["result"]["root"]["label"] == "0x12"
+    assert result["result"]["root"]["taken"] is True
     assert result["result"]["constraints"][0]["label"] == "0x6"
+    assert result["result"]["constraints"][0]["taken"] is True
     assert rpc.requests[0] == ("get_path_constraints", {"label": "0x12"})
 
 

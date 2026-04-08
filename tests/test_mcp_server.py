@@ -144,8 +144,8 @@ class FakeSession:
             "ok": True,
             "command": "path_constraint_closure",
             "result": {
-                "root": {"label": label, "expression": "ICmp:eq(input(0), 0x41)", "op": "ICmp"},
-                "constraints": [{"label": "0x6", "expression": "ICmp:ult(input(0), 0x80)", "op": "ICmp"}],
+                "root": {"label": label, "expression": "ICmp:eq(input(0), 0x41)", "op": "ICmp", "taken": True},
+                "constraints": [{"label": "0x6", "expression": "ICmp:ult(input(0), 0x80)", "op": "ICmp", "taken": True}],
                 "count": 1,
             },
         }
@@ -366,6 +366,8 @@ def test_mcp_tool_call_path_constraint_closure() -> None:
     result = response["result"]
     assert result["isError"] is False
     assert result["structuredContent"]["command"] == "path_constraint_closure"
+    assert result["structuredContent"]["result"]["root"]["taken"] is True
+    assert result["structuredContent"]["result"]["constraints"][0]["taken"] is True
     assert result["structuredContent"]["result"]["root"]["label"] == "0x12"
 
 

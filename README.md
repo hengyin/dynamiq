@@ -183,8 +183,8 @@ For stdin-driven input, prefer the built-in queued stdin flow: `send_bytes`, `se
 Use the older manual breakpoint-plus-`symbolize_mem` workflow only when the data source is not stdin, or when you need to symbolize some derived buffer instead of the original stdin stream.
 
 For symbolic path reasoning in the scripting API, use:
-- `session.recent_path_constraints(limit=...)` to discover recent path-condition labels
-- `session.path_constraint_closure(label)` to inspect the nested earlier constraints for one chosen label
+- `session.recent_path_constraints(limit=...)` to discover recent path-condition labels and whether each branch was taken
+- `session.path_constraint_closure(label)` to inspect the chosen path-condition plus the nested earlier constraints it depends on, including their `taken` directions
 
 Typical flow:
 ```python

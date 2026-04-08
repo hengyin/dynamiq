@@ -180,11 +180,18 @@ class MockBackend(BackendAdapter):
 
     def recent_path_constraints(self, limit=16):
         self.call_history.append(f"recent_path_constraints:{limit}")
-        return {"ok": True, "state": {}, "result": {"constraints": [{"label": "0x12"}], "count": 1}}
+        return {"ok": True, "state": {}, "result": {"constraints": [{"label": "0x12", "taken": True}], "count": 1}}
 
     def path_constraint_closure(self, label):
         self.call_history.append(f"path_constraint_closure:{label}")
-        return {"ok": True, "state": {}, "result": {"root": {"label": label}, "constraints": []}}
+        return {
+            "ok": True,
+            "state": {},
+            "result": {
+                "root": {"label": label, "taken": True},
+                "constraints": [{"label": "0x6", "taken": True}],
+            },
+        }
 
     def break_at_addresses(self, addresses, timeout=5.0, max_steps=10000):
         self.call_history.append(f"break_at_addresses:{addresses}")
@@ -429,6 +436,8 @@ class TestScriptSessionMethodDelegation:
 
         assert result["ok"] is True
         assert result["result"]["root"]["label"] == "0x12"
+        assert result["result"]["root"]["taken"] is True
+        assert result["result"]["constraints"][0]["taken"] is True
         assert "path_constraint_closure:0x12" in backend.call_history
 
     def test_disassemble_delegation(self):

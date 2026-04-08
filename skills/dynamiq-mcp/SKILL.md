@@ -81,7 +81,7 @@ Dynamiq provides **two complementary interfaces** for analyzing target programs:
 14. After finding a non-zero symbolic label in `regs` or `mem`, use `expr` to inspect the symbolic expression for that label.
 15. Use the older manual breakpoint-plus-`symbolize_mem` workflow only when the data source is not stdin, or when you need to symbolize a later derived buffer rather than the original stdin stream.
 16. After symbolic input has actually influenced control flow, call `recent_path_constraints` to discover the newest path-condition labels. Good trigger points are: after a breakpoint at an interesting branch target, after `advance {"mode":"continue"}` stops somewhere beyond a comparison or branch, or during a terminal pause on exit/crash. Do not query path constraints before the symbolic bytes have been consumed and exercised.
-17. Once you have a recent label, call `path_constraint_closure(label)` to recover the earlier constraints that the newest condition depends on.
+17. Once you have a recent label, call `path_constraint_closure(label)` to recover the earlier constraints that the newest condition depends on, including the `taken` direction for the root and each nested branch.
 18. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
 19. `close` at end.
 
@@ -99,7 +99,7 @@ Concrete path-constraint pattern:
 3. Optionally confirm symbolic influence first with `mem`, `regs`, or `expr`.
 4. Call `recent_path_constraints {"limit": 5}`. If it returns no constraints, keep running; the symbolic input has not influenced control flow yet.
 5. Pick the newest label from `constraints[0].label`.
-6. Call `path_constraint_closure {"label":"<newest_label>"}` to recover the earlier constraints that explain why that branch was taken.
+6. Call `path_constraint_closure {"label":"<newest_label>"}` to recover the earlier constraints that explain why that branch was taken; use each entry's `taken` flag to see the observed branch direction.
 7. Use this after each interesting stop, especially after branch-target breakpoints and exit/crash terminal pauses.
 
 Trace file mode:

@@ -261,9 +261,12 @@ def test_live_qemu_backend_path_constraint_queries() -> None:
 
         assert recent["result"]["count"] >= 2
         assert recent["result"]["constraints"][0]["op"] == "ICmp"
+        assert recent["result"]["constraints"][0]["taken"] is True
         assert closure["result"]["root"]["label"].lower() == labels[0].lower()
+        assert closure["result"]["root"]["taken"] is True
         assert labels[1].lower() in {
             str(entry["label"]).lower() for entry in closure["result"]["constraints"]
         }
+        assert all(entry["taken"] is True for entry in closure["result"]["constraints"])
     finally:
         backend.close()

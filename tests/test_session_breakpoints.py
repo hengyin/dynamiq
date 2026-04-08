@@ -91,8 +91,8 @@ class FakeBackend:
         return {
             "state": {},
             "result": {
-                "root": {"label": label, "op": "ICmp"},
-                "constraints": [{"label": "0x6", "op": "ICmp"}],
+                "root": {"label": label, "op": "ICmp", "taken": True},
+                "constraints": [{"label": "0x6", "op": "ICmp", "taken": True}],
                 "count": 1,
             },
         }
@@ -532,4 +532,6 @@ def test_session_path_constraint_closure_forwards_backend_result() -> None:
 
     assert result["command"] == "path_constraint_closure"
     assert result["result"]["root"]["label"] == "0x12"
+    assert result["result"]["root"]["taken"] is True
     assert result["result"]["constraints"][0]["label"] == "0x6"
+    assert result["result"]["constraints"][0]["taken"] is True
