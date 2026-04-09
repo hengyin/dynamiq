@@ -50,6 +50,8 @@ class QemuUserInstrumentedBackend:
             "trace_active": False,
             "trace_kind": None,
             "trace_file": None,
+            "stop_kind": None,
+            "stop_syscall_num": None,
             "pending_termination": False,
             "termination_kind": None,
             "last_rpc_method": None,
@@ -846,6 +848,16 @@ class QemuUserInstrumentedBackend:
         if "termination_kind" in payload:
             termination_kind = payload.get("termination_kind")
             self._state["termination_kind"] = termination_kind if isinstance(termination_kind, str) else None
+        if "stop_kind" in payload:
+            stop_kind = payload.get("stop_kind")
+            self._state["stop_kind"] = stop_kind if isinstance(stop_kind, str) else None
+        elif payload.get("status") == "running":
+            self._state["stop_kind"] = None
+        if "stop_syscall_num" in payload:
+            stop_syscall_num = payload.get("stop_syscall_num")
+            self._state["stop_syscall_num"] = int(stop_syscall_num) if isinstance(stop_syscall_num, int) else None
+        elif payload.get("status") == "running":
+            self._state["stop_syscall_num"] = None
 
     def _apply_trace_status(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):

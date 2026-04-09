@@ -1,185 +1,210 @@
 ---
 name: dynamiq-mcp
-description: Use when operating the Interactive Dynamic Analysis MCP server (`dynamiq`) for live binary sessions, including start/advance loops, breakpoint placement from session symbols, stdin payload delivery, and output/state polling.
+description: Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery, breakpoints, low-level inspection, symbolic input, symbolic expressions, and path-constraint discovery.
 ---
 
 # Dynamiq MCP Skill
 
-Use this skill when a task requires driving the `dynamiq` MCP tools for interactive dynamic analysis.
+Use this skill when operating the `dynamiq` MCP tools for live binary analysis.
 
-## When to Use MCP vs Scripting API
+## Core Rules
 
-Dynamiq provides **two complementary interfaces** for analyzing target programs:
-
-| Aspect | MCP Interface | Scripting API |
-|--------|---|---|
-| **Best For** | One-shot analysis from LLM; interactive debugging | Autonomous systems; testing; CI/CD pipelines |
-| **Interaction** | JSON-RPC stateless requests; human-friendly | Python library; persistent session |
-| **Session Management** | LLM manages session state across calls | Python code maintains session automatically |
-| **Data Flow** | Request → Response cycle; clean separation | Direct method calls; full state access |
-| **Integration** | Immediate availability; no setup | Local Python environment required |
-| **Real-time Feedback** | Good for interactive exploration | Better for programmatic workflows |
-
-**Choose MCP if:** You're analyzing a program interactively, need to explore dynamically, or want clean separation between tool calls.
-
-**Choose Scripting if:** You're building autonomous tests, security scanners, CI/CD workflows, or need persistent session state without round-trip overhead.
-
-### Example Scenarios
-
-- **MCP**: "Help me analyze this binary by setting breakpoints at malloc and checking memory allocation patterns"
-- **Scripting**: Automated test suite validating that functions execute correctly; autonomous security scanner continuously checking syscalls
-
-## Required Operating Rules
-
-0. Keep analysis program-agnostic.
-- Do not assume target-specific commands, prompts, symbol names, offsets, or exploit paths.
-- Infer interaction flow from observed `stdout`/`stderr`, then adapt inputs accordingly.
-- Use `syms`/`maps`/`regs`/`bt` from the current session as the source of truth.
-
-1. Never guess runtime addresses.
-- Always call `syms` in the current session and use `symbols[].loaded_address` for `bp_add`.
+1. Use session data, not guesses.
+- Resolve runtime addresses with `syms`.
+- Use `loaded_address` for `bp_add`.
+- Treat `regs`, `mem`, `maps`, `bt`, and `state` as the source of truth.
 
 2. Do not choose the runtime binary.
-- Runtime selection is environment-controlled by the MCP server launcher.
-- Do not ask the model to choose or override the qemu-user binary.
+- The MCP server launcher controls which `qemu-user` / SymFit binary is used.
 
-3. Always close the run/input/output loop.
-- After each `advance` with `mode="continue"`, call `stdout`, `stderr`, and usually `state`.
-- After each `send_line`, `send_bytes`, or `send_file`, call `advance {"mode":"continue"}` again, then poll `stdout`/`stderr`.
+3. `advance {"mode":"continue"}` should drive execution.
+- It should stop on meaningful execution boundaries such as input wait, breakpoint-like stops, terminal pending-exit, or timeout.
+- Do not assume stdout alone is a stop condition.
 
-4. Treat elapsed run windows as non-fatal.
-- An `advance` result with `reason=window_elapsed` is not a failure.
-- Mandatory sequence after `window_elapsed`: `stdout` -> `stderr` -> `state`.
-- Do not close/restart solely because the advance window elapsed.
+4. Always inspect after a stop.
+- Common follow-up loop: `state` -> `stdout` -> `stderr`.
+- Then use `regs`, `bt`, `disasm`, `mem`, `expr`, or path-constraint tools as needed.
 
-5. Use the correct stdin tool.
-- `send_line` for menu/prompt interactions.
-- `send_bytes` for exact text/byte payloads.
-- `send_file` for large payloads.
+5. Close the session when done.
+- Use `close` at the end of a workflow.
 
-6. Prefer targeted breakpoint workflows for complex interactive binaries.
-- Avoid long free-form interaction when trying to confirm a specific bug.
-- Set breakpoints on likely handlers/parsers first, then drive minimal input to hit them.
-- Use `regs`/`disasm`/`mem` at breakpoints to verify conditions and memory effects.
-- Use static analysis to identify candidate functions/conditions, then validate dynamically.
+## Minimal Loop
 
-## Canonical Session Sequence
+1. `start`
+2. `state`
+3. `advance {"mode":"continue"}`
+4. `stdout`
+5. `stderr`
+6. Repeat until you hit the point you care about
+7. `close`
 
-1. `start` with absolute `target` (and optional `args`, `cwd`, `qemu_config`).
-2. `state` to confirm launch.
-3. `syms` (optional `name_filter`) and collect `loaded_address` values.
-4. `bp_clear` then `bp_add` if breakpoints are needed.
-5. `advance {"mode":"continue"}`.
-6. `stdout` + `stderr`.
-7. `send_line` / `send_bytes` / `send_file` as needed.
-8. Repeat `advance {"mode":"continue"}` -> `stdout` -> `stderr` -> `state`.
-9. Use `regs`, `bt`, `disasm`, `mem`, `maps`, and `advance` for motion/inspection.
-10. Do not assume argv, stack buffers, heap buffers, or derived parser buffers become symbolic automatically. Use `symbolize_mem` or `symbolize_reg` explicitly for those.
-11. For stdin-driven input, prefer the built-in queued stdin flow. `send_line`, `send_bytes`, and `send_file` accept `symbolic: true`. When the runtime supports `queue_stdin_chunk`, each stdin write is recorded as an ordered concrete or symbolic chunk, and the guest buffer becomes symbolic automatically when stdin syscalls consume those bytes.
-12. Mixed stdin is supported. You can send concrete menu choices first, then a symbolic payload, then more concrete input. Keep the send order exact because the runtime preserves that byte-stream order.
-13. Immediately verify the result with `mem` or `regs` after execution reaches a point where the guest has consumed the stdin bytes. Expect symbolic metadata in `mem.result.symbolic_bytes` or `regs.result.symbolic_registers`.
-14. After finding a non-zero symbolic label in `regs` or `mem`, use `expr` to inspect the symbolic expression for that label.
-15. Use the older manual breakpoint-plus-`symbolize_mem` workflow only when the data source is not stdin, or when you need to symbolize a later derived buffer rather than the original stdin stream.
-16. After symbolic input has actually influenced control flow, call `recent_path_constraints` to discover the newest path-condition labels. Good trigger points are: after a breakpoint at an interesting branch target, after `advance {"mode":"continue"}` stops somewhere beyond a comparison or branch, or during a terminal pause on exit/crash. Do not query path constraints before the symbolic bytes have been consumed and exercised.
-17. Once you have a recent label, call `path_constraint_closure(label)` to recover the earlier constraints that the newest condition depends on, including the `taken` direction for the root and each nested branch.
-18. For tracing, use `trace_start` -> exercise target -> `trace_get` -> `trace_status` -> `trace_stop`.
-19. `close` at end.
+## Common Tool Patterns
 
-Concrete stdin pattern:
-1. `start` the target.
-2. `send_line {"line":"1"}` for concrete menu input, or `send_line {"line":"AAAA", "symbolic": true}` / `send_bytes {"data":"AAAA", "symbolic": true}` for symbolic stdin.
-3. `advance {"mode":"continue"}` until the program reaches the point where it has consumed that input.
-4. `stdout`, `stderr`, `state`, `regs`, or `mem` to confirm how the input affected execution and whether symbolic labels appeared.
-5. `expr {"label":"<first_nonzero_label>"}` if you need the expression for one symbolic byte or word.
-6. `advance {"mode":"continue"}` to keep running.
+### Basic interactive loop
 
-Concrete path-constraint pattern:
-1. Send symbolic stdin with `send_line {"line":"AAAA", "symbolic": true}` or `send_bytes {"data":"AAAA", "symbolic": true}`.
-2. `advance {"mode":"continue"}` until the target has consumed that input and reached an interesting branch, breakpoint, or terminal pause.
-3. Optionally confirm symbolic influence first with `mem`, `regs`, or `expr`.
-4. Call `recent_path_constraints {"limit": 5}`. If it returns no constraints, keep running; the symbolic input has not influenced control flow yet.
-5. Pick the newest label from `constraints[0].label`.
-6. Call `path_constraint_closure {"label":"<newest_label>"}` to recover the earlier constraints that explain why that branch was taken; use each entry's `taken` flag to see the observed branch direction.
-7. Use this after each interesting stop, especially after branch-target breakpoints and exit/crash terminal pauses.
+1. `start {"target":"/abs/path/to/program"}`
+2. `advance {"mode":"continue"}`
+3. `stdout`
+4. `stderr`
+5. `state`
 
-Trace file mode:
-- If live event streaming is unstable, set `start.qemu_config.instrumentation_trace_file_path` and use file-backed tracing via the same `trace_*` tools.
-- The runtime receives this path as `IA_TRACE_FILE`.
+### Breakpoint workflow
 
-## Tool Choice Guide
+1. `syms {"name_filter":"main"}`
+2. `bp_clear`
+3. `bp_add {"address":"<loaded_address>"}`
+4. `advance {"mode":"continue"}`
+5. `regs`
+6. `bt`
+7. `disasm`
 
-- `start`: begin a session; requires non-empty string `target`.
-- `advance`: motion control with `continue`, `insn`, `bb`, or `return` modes; all modes may stop early on input, breakpoints, or exit.
-- `pause`: force pause while running.
-- `syms`: resolve runtime addresses for this session only.
-- `bp_add` / `bp_del` / `bp_clear` / `bp_list`: breakpoint management.
-- `stdout` / `stderr`: incremental stream reads (cursor maintained by server).
-- `send_line`: appends newline automatically; add `symbolic: true` when you want that stdin line queued as symbolic.
-- `send_bytes`: use `data` (text) or `data_hex` (raw bytes), not both; add `symbolic: true` for symbolic stdin bytes.
-- `send_file`: stream bytes from local file to stdin; add `symbolic: true` when the streamed bytes should become symbolic on stdin consumption.
-- `regs` / `bt` / `disasm` / `mem` / `maps`: low-level state inspection.
-- `regs` also carries symbolic register labels in `result.symbolic_registers` when supported.
-- `mem` also carries symbolic byte labels in `result.symbolic_bytes` when supported.
-- `expr`: render the symbolic expression for one concrete symbolic label, typically after discovering that label through `regs` or `mem`.
-- `recent_path_constraints` / `path_constraint_closure`: scripting-side helpers for recent path-condition discovery and nested constraint closure lookup.
-- `symbolize_mem` / `symbolize_reg`: inject symbolic state into paused memory/registers. These are explicit actions; dynamiq does not symbolize newly received input for you.
-- `bt`: best-effort stack backtrace; use after breakpoints to quickly map call chains.
-- `trace_start` / `trace_stop` / `trace_status` / `trace_get`: trace tracing workflow and retrieval.
-- `qemu_config.instrumentation_trace_file_path`: optional trace spool file for deferred/offline trace retrieval.
-- `state`: verify lifecycle (`idle`, `paused`, `running`, `exited`).
-- `close`: terminate active session and reset stream cursors.
+### Exact stdin workflow
 
-## Recovery Procedure
+Use:
+- `send_line` for prompt-driven text input
+- `send_bytes` for exact byte sequences
+- `send_file` for larger payloads
 
-If the session behaves unexpectedly or appears stale:
+Typical loop:
+1. `send_line` or `send_bytes`
+2. `advance {"mode":"continue"}`
+3. `stdout`
+4. `stderr`
+5. `state`
 
-1. Call `state`.
-2. Drain `stdout` and `stderr`.
-3. Call `close`.
-4. Call `start` again.
-5. Re-run `syms` and rebuild breakpoints using fresh `loaded_address` values.
+## Symbolic Features
 
-## Deep + Wide Exploration Playbook
+Dynamiq supports two main symbolic workflows:
+- symbolic stdin
+- explicit symbolization of memory/registers
 
-Use a two-loop strategy: breadth first, then depth on hotspots.
+### Symbolic stdin
 
-1. Build a breadth map first.
-- Use static outputs to identify hubs: dispatchers, parsers, validators, alloc/copy/string handlers, and error exits.
-- Resolve those symbols with `syms` and set initial breakpoints from `loaded_address`.
+Prefer symbolic stdin when the target reads from stdin normally.
 
-2. Run a structured input matrix.
-- Prefer grouped cases over ad-hoc typing: valid, boundary, malformed, oversized, empty, and command-like inputs.
-- For each case, keep the same loop: `advance {"mode":"continue"}` -> `stdout` -> `stderr` -> `state`.
+Examples:
+- `send_line {"line":"AAAA", "symbolic": true}`
+- `send_bytes {"data":"AAAA", "symbolic": true}`
+- `send_file {"path":"/tmp/payload.bin", "symbolic": true}`
 
-3. Track state-space explicitly.
-- Treat each unique prompt/page/handler combination as a node.
-- Record the shortest input sequence that reaches each node.
-- Prioritize unexplored nodes, not repeated paths.
+Important:
+- Keep byte order exact. Dynamiq preserves stdin chunk order.
+- Mixed concrete + symbolic stdin is supported.
+- Symbolic stdin does not matter until the guest actually consumes it.
 
-4. Use checkpoints for branch fanout.
-- Save reusable checkpoints (or deterministic input prefixes) at major branch points.
-- Fan out mutations from each checkpoint instead of restarting from process start.
+Practical loop:
+1. `start`
+2. `send_line` / `send_bytes` with `symbolic: true`
+3. `advance {"mode":"continue"}` until the input has been consumed
+4. Inspect with `regs` or `mem`
+5. Use `expr` or path-constraint tools
 
-5. Switch to depth mode only on risky paths.
-- When breakpoints hit vulnerable surfaces, add fine-grained breakpoints nearby.
-- Collect `regs`, `disasm`, and targeted `mem` reads to confirm exact conditions and effects.
+### Explicit symbolization
 
-6. Rank exploration by novelty.
-- Prefer cases that increase unique breakpoint hits, unique states, or new error outputs.
-- Deprioritize cases that reproduce known behavior without new evidence.
+Use these when the interesting data source is not stdin, or when you want to symbolize a specific paused location.
 
-7. Keep reproducible evidence per path.
-- Save: exact input sequence, breakpoint hit order, key `stdout`/`stderr`/`state`, and critical register/memory observations.
-- Require reproducible replay before elevating a path to a vulnerability claim.
+- `symbolize_mem {"address":"0x...", "size": N}`
+- `symbolize_reg {"register":"rax"}`
+
+After symbolizing:
+1. `advance`
+2. inspect with `regs` / `mem`
+3. call `expr` on a non-zero label
+
+## Expression Workflow
+
+Use this when you want a symbolic expression for a specific byte/register/value.
+
+1. Find a symbolic label from:
+- `regs.result.symbolic_registers`
+- `mem.result.symbolic_bytes`
+
+2. Call:
+- `expr {"label":"0x..."}`
+
+Typical flow:
+1. send symbolic input or explicitly symbolize memory/registers
+2. `advance`
+3. `regs` or `mem`
+4. pick the first non-zero label
+5. `expr`
+
+## Path-Constraint Workflow
+
+Use this after symbolic data has influenced control flow.
+
+Tools:
+- `recent_path_constraints`
+- `path_constraint_closure`
+
+Typical flow:
+1. send symbolic stdin or symbolize data explicitly
+2. `advance {"mode":"continue"}` until the program reaches a branch, failure, success path, or terminal pending-exit
+3. call `recent_path_constraints {"limit": 5}`
+4. pick the newest label from `constraints[0].label`
+5. call `path_constraint_closure {"label":"<newest>"}`
+
+Read the results like this:
+- `expression`: the branch condition
+- `taken`: which direction was observed in this run
+- `pc`: where the condition was recorded
+
+Good times to query path constraints:
+- after a branch-oriented breakpoint
+- after a symbolic failure path like `You lose!`
+- during terminal pending-exit before final process teardown
+
+## End-to-End Symbolic Example
+
+Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expression.
+
+1. `start`
+2. `send_bytes {"data":"AAAA", "symbolic": true}`
+3. `advance {"mode":"continue"}`
+4. `stdout`
+5. `state`
+6. `recent_path_constraints {"limit": 5}`
+7. take `constraints[0].label`
+8. `path_constraint_closure {"label":"<that label>"}`
+9. if needed, use `regs` or `mem` to find a specific symbolic label
+10. `expr {"label":"0x..."}`
+
+## Tool Guide
+
+- `start`: begin a session
+- `close`: terminate the session
+- `state`: current lifecycle and stop state
+- `advance`: main motion control
+- `pause`: force a pause while running
+- `syms`: resolve runtime symbols for this session
+- `bp_add` / `bp_del` / `bp_clear` / `bp_list`: breakpoint management
+- `stdout` / `stderr`: incremental stream reads
+- `send_line` / `send_bytes` / `send_file`: stdin delivery
+- `regs`: register snapshot and symbolic register labels
+- `mem`: memory bytes and symbolic byte labels
+- `disasm`: instruction view around an address
+- `bt`: quick call-chain context
+- `maps`: guest memory map summary
+- `symbolize_mem` / `symbolize_reg`: explicit symbolic injection
+- `expr`: symbolic expression for one label
+- `recent_path_constraints`: newest observed path conditions
+- `path_constraint_closure`: nested constraint closure for one label
+- `trace_start` / `trace_stop` / `trace_status` / `trace_get`: trace capture workflow
+
+## Recovery
+
+If the session looks stale or inconsistent:
+1. `state`
+2. `stdout`
+3. `stderr`
+4. `close`
+5. `start` again
+6. rebuild breakpoints from fresh `syms`
 
 ## Notes
 
-- Prefer absolute target paths in `start`.
-- For stack memory reads, call `regs` first and use live `rsp` from that result.
-- For stdin-controlled input, prefer `send_line` / `send_bytes` / `send_file` with `symbolic: true` instead of manual post-`read` buffer symbolization. Fall back to `symbolize_mem` only for non-stdin sources or derived buffers.
-- For symbolic reasoning, discover labels through `regs` or `mem` first, then call `expr` on the specific non-zero label you want to inspect.
-- For path-constraint reasoning, do not query immediately after sending symbolic input. First let execution advance until the symbolic bytes have been consumed and a branch or terminal condition has been reached. Then call `recent_path_constraints()`/`recent_path_constraints {"limit": ...}` and use the newest returned label with `path_constraint_closure(label)`.
-- A good default is: symbolic stdin -> `advance` -> `recent_path_constraints` -> `path_constraint_closure`.
-- For call-chain context, call `bt` after a breakpoint hit before deeper `disasm`/`mem`.
-- Do not reuse addresses from previous sessions.
-- If tool output indicates malformed arguments, fix input shape before retrying.
+- Prefer absolute paths in `start`.
+- Do not reuse addresses from earlier sessions.
+- For stack inspection, get `rsp` from `regs` first.
+- For stdin-driven symbolic analysis, prefer `send_line` / `send_bytes` / `send_file` with `symbolic: true` over manual post-read buffer symbolization.
+- Query path constraints only after the symbolic bytes have actually affected control flow.

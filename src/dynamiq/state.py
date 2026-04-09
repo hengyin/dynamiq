@@ -16,6 +16,8 @@ class ExecutionState:
     args: list[str] = field(default_factory=list)
     cwd: str | None = None
     stop_reason: str | None = None
+    stop_kind: str | None = None
+    stop_syscall_num: int | None = None
     pending_termination: bool = False
     termination_kind: str | None = None
     exit_code: int | None = None
@@ -56,6 +58,8 @@ class ExecutionState:
             "args": list(self.args),
             "cwd": self.cwd,
             "stop_reason": self.stop_reason,
+            "stop_kind": self.stop_kind,
+            "stop_syscall_num": self.stop_syscall_num,
             "pending_termination": self.pending_termination,
             "termination_kind": self.termination_kind,
             "exit_code": self.exit_code,

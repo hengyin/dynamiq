@@ -320,4 +320,14 @@ class QemuUserProcessRunner:
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            pass
+            if sig == signal.SIGKILL:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    return
+                except OSError:
+                    return
+                try:
+                    process.wait(timeout=max(0.1, timeout))
+                except subprocess.TimeoutExpired:
+                    pass

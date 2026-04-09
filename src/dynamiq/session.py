@@ -202,6 +202,17 @@ class AnalysisSession:
             state_payload = self.backend.get_state()
             self._merge_state(state_payload)
 
+            if (
+                self.state.session_status in {"paused", "idle"}
+                and self.state.stop_kind == "sleep"
+                and not self.state.pending_termination
+            ):
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                self._forward("advance", self.backend.resume(min(timeout, max(0.1, remaining))))
+                continue
+
             if self.state.session_status in {"paused", "idle", "exited", "closed"}:
                 stop_reason = self._infer_stop_reason({}, self._read_live_pc(), completed=False)
                 result = {

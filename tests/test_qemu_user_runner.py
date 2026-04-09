@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -139,3 +141,38 @@ def test_qemu_user_process_runner_uses_process_group_cleanup() -> None:
     runner.close()
 
     assert process.poll() is not None
+
+
+class _StubbornProcess:
+    def __init__(self) -> None:
+        self.pid = 4242
+        self._returncode = None
+        self.kill_calls = 0
+        self.wait_timeouts: list[float] = []
+
+    def poll(self):
+        return self._returncode
+
+    def wait(self, timeout: float):
+        self.wait_timeouts.append(timeout)
+        if self.kill_calls:
+            self._returncode = -signal.SIGKILL
+            return self._returncode
+        raise subprocess.TimeoutExpired(cmd="qemu-x86_64-instrumented", timeout=timeout)
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+    def terminate(self) -> None:
+        pass
+
+
+def test_qemu_user_process_runner_forces_kill_after_sigkill_timeout(monkeypatch) -> None:
+    process = _StubbornProcess()
+    monkeypatch.setattr("dynamiq.qemu_user.os.killpg", lambda _pid, _sig: None)
+
+    QemuUserProcessRunner._terminate_process_group(process, signal.SIGKILL, timeout=0.01)
+
+    assert process.kill_calls == 1
+    assert process.poll() == -signal.SIGKILL
+    assert process.wait_timeouts == [0.01, 0.1]
