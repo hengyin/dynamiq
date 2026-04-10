@@ -233,7 +233,16 @@ class AnalysisSession:
                     result["pc"] = self.state.pc
                 return self._response("advance", result)
             time.sleep(0.05)
-        raise SessionTimeoutError("timed out waiting for advance continue condition")
+        self._merge_state(self.backend.get_state())
+        result = {
+            "mode": "continue",
+            "completed": False,
+            "timed_out": True,
+            "stop_reason": "running" if self.state.session_status == "running" else "unknown",
+        }
+        if isinstance(self.state.pc, str):
+            result["pc"] = self.state.pc
+        return self._response("advance", result)
 
     def _advance_counted(self, mode: str, count: int, timeout: float) -> dict[str, Any]:
         current_pc = self._read_live_pc()

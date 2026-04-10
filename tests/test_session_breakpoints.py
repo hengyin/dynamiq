@@ -618,8 +618,13 @@ def test_session_advance_continue_times_out_non_fatally() -> None:
     session = AnalysisSession(backend=backend)
     session.state.session_status = "paused"
 
-    with pytest.raises(SessionTimeoutError, match="advance continue"):
-        session.advance(mode="continue", timeout=0.1)
+    result = session.advance(mode="continue", timeout=0.1)
+
+    assert result["result"]["mode"] == "continue"
+    assert result["result"]["completed"] is False
+    assert result["result"]["timed_out"] is True
+    assert result["result"]["stop_reason"] == "running"
+    assert result["state"]["session_status"] == "running"
 
 
 def test_session_recent_path_constraints_forwards_backend_result() -> None:
