@@ -12,6 +12,16 @@ from pathlib import Path
 from typing import Any
 
 
+def _teardown_log(message: str) -> None:
+    if not os.getenv("DYNAMIQ_DEBUG_TEARDOWN"):
+        return
+    try:
+        with open("/tmp/dynamiq-teardown.log", "a", encoding="utf-8") as stream:
+            stream.write(f"qemu_user pid={os.getpid()} {message}\n")
+    except Exception:
+        pass
+
+
 _ELF_MACHINE_TO_QEMU_USER = {
     3: "qemu-i386",
     62: "qemu-x86_64",
@@ -187,11 +197,14 @@ class QemuUserProcessRunner:
 
     def close(self) -> None:
         if self._process is None:
+            _teardown_log("close no-process")
             return
+        _teardown_log(f"close start child_pid={self._process.pid} poll={self._process.poll()} sid={os.getsid(self._process.pid) if self._process.poll() is None else 'dead'}")
         if self._process.poll() is None:
             self._terminate_process_group(self._process, signal.SIGTERM, timeout=2.0)
             if self._process.poll() is None:
                 self._terminate_process_group(self._process, signal.SIGKILL, timeout=2.0)
+        _teardown_log(f"close end child_pid={self._process.pid} poll={self._process.poll()}")
         self._close_stdout_pty()
         self._process = None
         self._config = None
@@ -307,27 +320,36 @@ class QemuUserProcessRunner:
         timeout: float,
     ) -> None:
         if process.poll() is not None:
+            _teardown_log(f"terminate skip sig={sig.name} child_pid={process.pid} already={process.poll()}")
             return
         try:
+            _teardown_log(f"terminate killpg sig={sig.name} child_pid={process.pid}")
             os.killpg(process.pid, sig)
         except ProcessLookupError:
+            _teardown_log(f"terminate ProcessLookupError sig={sig.name} child_pid={process.pid}")
             return
-        except OSError:
+        except OSError as exc:
+            _teardown_log(f"terminate killpg OSError sig={sig.name} child_pid={process.pid} exc={exc!r}")
             if sig == signal.SIGKILL:
                 process.kill()
             else:
                 process.terminate()
         try:
             process.wait(timeout=timeout)
+            _teardown_log(f"terminate wait returned sig={sig.name} child_pid={process.pid} poll={process.poll()}")
         except subprocess.TimeoutExpired:
+            _teardown_log(f"terminate wait timeout sig={sig.name} child_pid={process.pid}")
             if sig == signal.SIGKILL:
                 try:
                     process.kill()
                 except ProcessLookupError:
+                    _teardown_log(f"terminate process.kill ProcessLookupError child_pid={process.pid}")
                     return
-                except OSError:
+                except OSError as exc:
+                    _teardown_log(f"terminate process.kill OSError child_pid={process.pid} exc={exc!r}")
                     return
                 try:
                     process.wait(timeout=max(0.1, timeout))
+                    _teardown_log(f"terminate second wait returned child_pid={process.pid} poll={process.poll()}")
                 except subprocess.TimeoutExpired:
-                    pass
+                    _teardown_log(f"terminate second wait timeout child_pid={process.pid}")

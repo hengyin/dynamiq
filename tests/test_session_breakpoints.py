@@ -266,47 +266,6 @@ class FakeBackendContinueSilentIo(FakeBackend):
         return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
 
 
-class FakeBackendContinueSleep(FakeBackend):
-    def __init__(self) -> None:
-        super().__init__()
-        self.running = False
-        self.resume_calls = 0
-        self.pause_index = 0
-
-    def resume(self, timeout):  # noqa: ANN001
-        del timeout
-        self.running = True
-        self.resume_calls += 1
-        return {"state": {"session_status": "running", "stop_kind": None, "stop_syscall_num": None}, "result": {}}
-
-    def get_state(self):
-        if self.running:
-            self.running = False
-            self.pause_index += 1
-            if self.pause_index == 1:
-                return {
-                    "session_status": "paused",
-                    "pc": self.pc_seq[self.idx],
-                    "stop_kind": "sleep",
-                    "stop_syscall_num": 35,
-                    "capabilities": self.capabilities(),
-                }
-            return {
-                "session_status": "paused",
-                "pc": self.pc_seq[self.idx],
-                "capabilities": self.capabilities(),
-            }
-        return {"session_status": "paused", "pc": self.pc_seq[self.idx], "capabilities": self.capabilities()}
-
-    def read_stdout(self, cursor=0, max_chars=4096):  # noqa: ANN001
-        del max_chars
-        return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
-
-    def read_stderr(self, cursor=0, max_chars=4096):  # noqa: ANN001
-        del max_chars
-        return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
-
-
 class FakeBackendAdvanceBasicBlocks(FakeBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -554,20 +513,6 @@ def test_session_advance_continue_ignores_stdout_until_real_pause() -> None:
     assert result["result"]["stdout_ready"] is False
     assert result["result"]["stderr_ready"] is False
     assert backend.pause_calls == 0
-
-
-def test_session_advance_continue_auto_resumes_sleep_stops() -> None:
-    backend = FakeBackendContinueSleep()
-    session = AnalysisSession(backend=backend)
-    session.state.session_status = "paused"
-
-    result = session.advance(mode="continue", timeout=1.0)
-
-    assert result["result"]["mode"] == "continue"
-    assert result["result"]["stop_reason"] == "io"
-    assert result["result"]["stdout_ready"] is False
-    assert result["result"]["stderr_ready"] is False
-    assert backend.resume_calls == 2
 
 
 def test_session_advance_continue_reports_exited_without_io() -> None:

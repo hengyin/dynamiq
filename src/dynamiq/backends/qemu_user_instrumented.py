@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import time
@@ -20,6 +21,26 @@ from ..instrumentation import (
 from ..models import MemoryMapSnapshot, MemoryReadResult, RegisterSnapshot
 from ..qemu_user import QemuUserLaunchConfig, QemuUserProcessRunner
 from ..qmp import QmpClient, QmpController
+
+
+def _teardown_log(message: str) -> None:
+    if not os.getenv("DYNAMIQ_DEBUG_TEARDOWN"):
+        return
+    try:
+        with open("/tmp/dynamiq-teardown.log", "a", encoding="utf-8") as stream:
+            stream.write(f"backend pid={os.getpid()} {message}\n")
+    except Exception:
+        pass
+
+
+def _debug_log(message: str) -> None:
+    if not os.getenv("DYNAMIQ_DEBUG_MCP"):
+        return
+    try:
+        with open("/tmp/dynamiq-mcp-debug.log", "a", encoding="utf-8") as stream:
+            stream.write(f"backend pid={os.getpid()} {message}\n")
+    except Exception:
+        pass
 from .base import BackendCapabilities
 
 
@@ -53,8 +74,6 @@ class QemuUserInstrumentedBackend:
             "trace_active": False,
             "trace_kind": None,
             "trace_file": None,
-            "stop_kind": None,
-            "stop_syscall_num": None,
             "pending_termination": False,
             "termination_kind": None,
             "last_rpc_method": None,
@@ -104,6 +123,7 @@ class QemuUserInstrumentedBackend:
         qemu_config: dict[str, Any] | None = None,
     ) -> None:
         qemu_config = dict(qemu_config or {})
+        _debug_log(f"start target={target!r} args={args!r} cwd={cwd!r} launch={bool(qemu_config.get('launch'))}")
         self._capabilities = self._default_capabilities()
         try:
             if qemu_config.get("launch"):
@@ -227,6 +247,10 @@ class QemuUserInstrumentedBackend:
                 self._state["session_status"] = initial_status["status"]
             self._refresh_trace_from_file()
             self._started = True
+            child_pid = None
+            if self._process_runner is not None and getattr(self._process_runner, '_process', None) is not None:
+                child_pid = self._process_runner._process.pid
+            _debug_log(f"start complete status={self._state.get('session_status')} child_pid={child_pid} rpc_socket={self._state.get('instrumentation_rpc_socket_path')}")
         except Exception:
             try:
                 self.close()
@@ -236,6 +260,7 @@ class QemuUserInstrumentedBackend:
 
     def resume(self, timeout: float) -> dict[str, Any]:
         self._require_started()
+        _debug_log(f"resume timeout={timeout}")
         before_status = self._state.get("session_status")
         before_pc = self._state.get("pc")
         if self._instrumentation_rpc is not None:
@@ -350,6 +375,8 @@ class QemuUserInstrumentedBackend:
 
     def write_stdin(self, data: str | bytes, symbolic: bool = False) -> dict[str, Any]:
         self._require_started()
+        payload_size = len(data) if isinstance(data, bytes) else len(data.encode("utf-8", errors="replace"))
+        _debug_log(f"write_stdin symbolic={symbolic} size={payload_size} session_status={self._state.get('session_status')}")
         if self._process_runner is None:
             raise UnsupportedOperationError("backend does not have a launched process")
         status = self._state.get("session_status")
@@ -613,23 +640,7 @@ class QemuUserInstrumentedBackend:
         return self._response({"filters": config})
 
     def get_state(self) -> dict[str, Any]:
-        self._sync_process_state()
-        if self._state.get("session_status") != "exited" and self._instrumentation_rpc is not None and self._started:
-            try:
-                status = self._instrumentation_rpc.request("query_status")
-            except Exception:
-                status = None
-            if status and "status" in status:
-                self._state["session_status"] = status["status"]
-                self._apply_runtime_status(status)
-                self._apply_trace_status(status)
-        elif self._state.get("session_status") != "exited" and self._controller is not None and self._started:
-            try:
-                status = self._controller.query_status()
-            except Exception:
-                status = None
-            if status and "status" in status:
-                self._state["session_status"] = status["status"]
+        self._refresh_live_status()
         if self._instrumentation is not None:
             self._refresh_recent_events()
         else:
@@ -640,6 +651,7 @@ class QemuUserInstrumentedBackend:
         return self._capabilities.to_dict()
 
     def close(self) -> None:
+        _teardown_log(f"close start process_runner={self._process_runner is not None} instrumentation={self._instrumentation is not None} rpc={self._instrumentation_rpc is not None} qmp={self._controller is not None}")
         cleanup_actions = [
             self._process_runner.close if self._process_runner is not None else None,
             self._instrumentation.close if self._instrumentation is not None else None,
@@ -650,9 +662,11 @@ class QemuUserInstrumentedBackend:
             if action is None:
                 continue
             try:
+                _teardown_log(f"calling cleanup action {getattr(action, '__qualname__', repr(action))}")
                 action()
-            except Exception:
-                pass
+                _teardown_log(f"cleanup action returned {getattr(action, '__qualname__', repr(action))}")
+            except Exception as exc:
+                _teardown_log(f"cleanup action raised {exc!r}")
         if self._auto_socket_root is not None:
             shutil.rmtree(self._auto_socket_root, ignore_errors=True)
             self._auto_socket_root = None
@@ -690,6 +704,7 @@ class QemuUserInstrumentedBackend:
         self._state["last_event_id"] = None
         self._state["capabilities"] = self._capabilities.to_dict()
         self._trace_file_path = None
+        _teardown_log("close done")
         self._trace_file_offset = 0
         self._trace_raw_recent.clear()
         self._trace_filter_types = set()
@@ -701,12 +716,50 @@ class QemuUserInstrumentedBackend:
         self._state["trace_file"] = None
 
     def _response(self, result: dict[str, Any]) -> dict[str, Any]:
-        self._sync_process_state()
+        self._refresh_live_status()
         if self._instrumentation is not None:
             self._refresh_recent_events()
         else:
             self._refresh_trace_from_file()
         return {"state": dict(self._state), "result": result}
+
+    def _refresh_live_status(self) -> None:
+        if self._instrumentation_rpc is not None and self._started:
+            try:
+                status = self._instrumentation_rpc.request("query_status")
+            except Exception as exc:
+                process_summary = None
+                if self._process_runner is not None:
+                    process_summary = self._process_runner.exited_summary()
+                if process_summary is not None:
+                    raise InvalidStateError(f"failed to query instrumentation RPC status; {process_summary}") from exc
+                raise InvalidStateError("failed to query instrumentation RPC status") from exc
+            if not isinstance(status, dict) or "status" not in status:
+                raise InvalidStateError("instrumentation RPC status response missing status")
+            self._state["session_status"] = status["status"]
+            _debug_log(f"live_status rpc status={status.get('status')} pending_termination={status.get('pending_termination')} termination_kind={status.get('termination_kind')} pc={status.get('pc')}")
+            self._apply_runtime_status(status)
+            self._apply_trace_status(status)
+            return
+        if self._controller is not None and self._started:
+            try:
+                status = self._controller.query_status()
+            except Exception as exc:
+                process_summary = None
+                if self._process_runner is not None:
+                    process_summary = self._process_runner.exited_summary()
+                if process_summary is not None:
+                    raise InvalidStateError(f"failed to query backend control status; {process_summary}") from exc
+                raise InvalidStateError("failed to query backend control status") from exc
+            if not isinstance(status, dict) or "status" not in status:
+                raise InvalidStateError("backend control status response missing status")
+            self._state["session_status"] = status["status"]
+            _debug_log(f"live_status controller status={status.get('status')}")
+            return
+        if self._started:
+            _debug_log("live_status missing live channel")
+            raise InvalidStateError("backend has no live status channel configured")
+        self._sync_process_state()
 
     def _record_trace(self, event: dict[str, Any]) -> None:
         event_id = event.get("event_id")
@@ -856,6 +909,7 @@ class QemuUserInstrumentedBackend:
     def _sync_process_state(self) -> None:
         if self._process_runner is None:
             return
+        _debug_log(f"sync_process_state before status={self._state.get('session_status')} process_runner_present={self._process_runner is not None}")
         process = self._process_runner.process
         if process is None:
             return
@@ -865,6 +919,7 @@ class QemuUserInstrumentedBackend:
         before_status = self._state.get("session_status")
         before_pc = self._state.get("pc")
         self._state["session_status"] = "exited"
+        _debug_log(f"sync_process_state marked exited returncode={returncode}")
         self._state["pending_termination"] = False
         if returncode < 0:
             self._state["exit_signal"] = f"SIG{-returncode}"
@@ -884,17 +939,6 @@ class QemuUserInstrumentedBackend:
         if "termination_kind" in payload:
             termination_kind = payload.get("termination_kind")
             self._state["termination_kind"] = termination_kind if isinstance(termination_kind, str) else None
-        if "stop_kind" in payload:
-            stop_kind = payload.get("stop_kind")
-            self._state["stop_kind"] = stop_kind if isinstance(stop_kind, str) else None
-        elif payload.get("status") == "running":
-            self._state["stop_kind"] = None
-        if "stop_syscall_num" in payload:
-            stop_syscall_num = payload.get("stop_syscall_num")
-            self._state["stop_syscall_num"] = int(stop_syscall_num) if isinstance(stop_syscall_num, int) else None
-        elif payload.get("status") == "running":
-            self._state["stop_syscall_num"] = None
-
     def _apply_trace_status(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):
             return

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import ctypes
 import json
 import os
 import signal
@@ -23,6 +24,27 @@ MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "dynamiq"
 SERVER_VERSION = "0.1.0"
 MCP_LOCKED_QEMU_PATH_ENV = "DYNAMIQ_MCP_QEMU_USER_PATH"
+
+
+def _teardown_log(message: str) -> None:
+    if not os.getenv("DYNAMIQ_DEBUG_TEARDOWN"):
+        return
+    try:
+        with open("/tmp/dynamiq-teardown.log", "a", encoding="utf-8") as stream:
+            stream.write(f"mcp_server pid={os.getpid()} {message}\n")
+    except Exception:
+        pass
+
+
+def _debug_log(message: str) -> None:
+    if not os.getenv("DYNAMIQ_DEBUG_MCP"):
+        return
+    try:
+        with open("/tmp/dynamiq-mcp-debug.log", "a", encoding="utf-8") as stream:
+            stream.write(f"mcp_server pid={os.getpid()} {message}\n")
+    except Exception:
+        pass
+_PR_SET_PDEATHSIG = 1
 
 
 @dataclass(slots=True)
@@ -111,6 +133,7 @@ class InteractiveAnalysisMcpServer:
         if name not in self._tools:
             return self._tool_error(f"unknown tool: {name}")
 
+        _debug_log(f"tool call name={name} args={arguments!r} has_session={self._session is not None}")
         try:
             if name == "start":
                 session = self._ensure_session()
@@ -370,19 +393,25 @@ class InteractiveAnalysisMcpServer:
                 return self._tool_ok(result)
             return self._tool_error(f"tool not implemented: {name}")
         except KeyError as exc:
+            _debug_log(f"tool error name={name} missing_arg={exc.args[0]!r}")
             return self._tool_error(f"missing required argument: {exc.args[0]}")
         except Exception as exc:  # noqa: BLE001
+            _debug_log(f"tool error name={name} exc={exc!r}")
             return self._tool_error(str(exc))
 
     def shutdown(self) -> None:
+        _teardown_log(f"shutdown start has_session={self._session is not None}")
         if self._session is None:
             return
         try:
+            _teardown_log("shutdown calling session.close")
             self._session.close()
-        except Exception:
-            pass
+            _teardown_log("shutdown session.close returned")
+        except Exception as exc:
+            _teardown_log(f"shutdown session.close raised {exc!r}")
         self._session = None
         self._reset_stream_cursors()
+        _teardown_log("shutdown done")
 
     def _reset_stream_cursors(self) -> None:
         self._stdout_cursor = 0
@@ -1122,10 +1151,25 @@ def _install_shutdown_hooks(server: InteractiveAnalysisMcpServer) -> None:
         signal.signal(signum, _handle_signal)
 
 
+def _arm_parent_death_signal() -> None:
+    if sys.platform != "linux":
+        return
+    try:
+        libc = ctypes.CDLL(None)
+        prctl = libc.prctl
+        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        prctl.restype = ctypes.c_int
+        if prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) != 0:
+            return
+    except Exception:
+        return
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Interactive Dynamic Analysis MCP server (stdio)")
     parser.add_argument("--transport", choices=["stdio"], default="stdio")
     parser.parse_args()
+    _arm_parent_death_signal()
     server = InteractiveAnalysisMcpServer()
     _install_shutdown_hooks(server)
     return run_stdio(server)

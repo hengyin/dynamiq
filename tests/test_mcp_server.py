@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import atexit
+import ctypes
 import json
 import signal
 
 from dynamiq.errors import InvalidStateError, SessionTimeoutError
-from dynamiq.mcp_server import InteractiveAnalysisMcpServer, _install_shutdown_hooks
+from dynamiq.mcp_server import InteractiveAnalysisMcpServer, _arm_parent_death_signal, _install_shutdown_hooks
 
 
 class FakeSession:
@@ -543,6 +544,26 @@ def test_mcp_server_shutdown_closes_active_session() -> None:
     )
     server.shutdown()
     assert fake.close_calls == 1
+
+
+def test_arm_parent_death_signal_uses_prctl_on_linux(monkeypatch) -> None:
+    calls: list[tuple[int, int, int, int, int]] = []
+
+    class FakeLibC:
+        def __init__(self) -> None:
+            self.prctl = self._prctl
+
+        @staticmethod
+        def _prctl(arg0: int, arg1: int, arg2: int, arg3: int, arg4: int) -> int:
+            calls.append((arg0, arg1, arg2, arg3, arg4))
+            return 0
+
+    monkeypatch.setattr("dynamiq.mcp_server.sys.platform", "linux")
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: FakeLibC())
+
+    _arm_parent_death_signal()
+
+    assert calls == [(1, signal.SIGTERM, 0, 0, 0)]
 
 
 def test_install_shutdown_hooks_registers_atexit_and_signal_handlers(monkeypatch) -> None:

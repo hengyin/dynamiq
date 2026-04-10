@@ -13,6 +13,16 @@ from .snapshot import Snapshot
 from .state import ExecutionState
 
 
+def _teardown_log(message: str) -> None:
+    if not os.getenv("DYNAMIQ_DEBUG_TEARDOWN"):
+        return
+    try:
+        with open("/tmp/dynamiq-teardown.log", "a", encoding="utf-8") as stream:
+            stream.write(f"session pid={os.getpid()} {message}\n")
+    except Exception:
+        pass
+
+
 @dataclass(slots=True)
 class SessionConfig:
     backend_name: str = "qemu_user_instrumented"
@@ -201,17 +211,6 @@ class AnalysisSession:
         while time.time() < deadline:
             state_payload = self.backend.get_state()
             self._merge_state(state_payload)
-
-            if (
-                self.state.session_status in {"paused", "idle"}
-                and self.state.stop_kind == "sleep"
-                and not self.state.pending_termination
-            ):
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                self._forward("advance", self.backend.resume(min(timeout, max(0.1, remaining))))
-                continue
 
             if self.state.session_status in {"paused", "idle", "exited", "closed"}:
                 stop_reason = self._infer_stop_reason({}, self._read_live_pc(), completed=False)
@@ -786,11 +785,14 @@ class AnalysisSession:
         return self._response("capabilities", {"capabilities": self.backend.capabilities()})
 
     def close(self) -> dict[str, Any]:
+        _teardown_log("close start")
         self.backend.close()
+        _teardown_log("close backend.close returned")
         self.state.session_status = "closed"
         self.state.trace_active = False
         self.state.trace_kind = None
         self.state.trace_file = None
+        _teardown_log("close done")
         return self._response("close", {})
 
     def _forward(self, command: str, payload: dict[str, Any]) -> dict[str, Any]:
