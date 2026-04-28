@@ -25,6 +25,7 @@ def _teardown_log(message: str) -> None:
 _ELF_MACHINE_TO_QEMU_USER = {
     3: "qemu-i386",
     62: "qemu-x86_64",
+    183: "qemu-aarch64",
 }
 
 

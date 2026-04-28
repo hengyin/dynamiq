@@ -64,10 +64,30 @@ def test_qemu_user_launch_config_selects_i386_for_32bit_elf(monkeypatch, tmp_pat
     assert config.qemu_user_path == str(preferred)
 
 
+def test_qemu_user_launch_config_selects_aarch64_for_64bit_arm_elf(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    preferred = repo_root / "tools" / "qemu" / "qemu-aarch64-instrumented"
+    preferred.parent.mkdir(parents=True)
+    preferred.write_text("", encoding="utf-8")
+
+    target = tmp_path / "sample-aarch64"
+    # ELF64 + little-endian + ET_EXEC + EM_AARCH64
+    target.write_bytes(b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + b"\x02\x00\xb7\x00")
+
+    monkeypatch.setattr("dynamiq.qemu_user.Path.resolve", lambda self: repo_root / "src" / "dynamiq" / "qemu_user.py")
+    monkeypatch.setattr("dynamiq.qemu_user.shutil.which", lambda _name: None)
+
+    config = QemuUserLaunchConfig.from_target(target=str(target), qemu_config={})
+
+    assert config.qemu_user_path == str(preferred)
+
+
 def test_qemu_user_launch_config_falls_back_to_x86_64_when_arch_unknown(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
     target = tmp_path / "not-elf"
     target.write_text("plain text", encoding="utf-8")
 
+    monkeypatch.setattr("dynamiq.qemu_user.Path.resolve", lambda self: repo_root / "src" / "dynamiq" / "qemu_user.py")
     monkeypatch.setattr("dynamiq.qemu_user.shutil.which", lambda _name: None)
 
     config = QemuUserLaunchConfig.from_target(target=str(target), qemu_config={})
