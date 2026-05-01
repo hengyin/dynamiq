@@ -74,14 +74,26 @@ class AnalysisSession:
     def advance_basic_blocks(self, count: int = 1, timeout: float = 5.0) -> dict[str, Any]:
         return self._forward("advance_basic_blocks", self.backend.advance_basic_blocks(count, timeout))
 
-    def bp_add(self, address: str) -> dict[str, Any]:
-        normalized = str(address).strip()
-        if normalized == "":
-            raise InvalidStateError("breakpoint address must be non-empty")
-        value = self._parse_address(normalized)
+    def bp_add(
+        self,
+        address: str | None = None,
+        *,
+        module: str | None = None,
+        offset: int | str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        value, resolved = self._resolve_breakpoint_address(
+            address=address,
+            module=module,
+            offset=offset,
+            symbol=symbol,
+        )
         if value not in self.breakpoints:
             self.breakpoints.append(value)
-        return self._response("bp_add", {"address": hex(value), "breakpoints": [hex(item) for item in self.breakpoints]})
+        result = {"address": hex(value), "breakpoints": [hex(item) for item in self.breakpoints]}
+        if resolved:
+            result["resolved"] = resolved
+        return self._response("bp_add", result)
 
     def bp_del(self, address: str) -> dict[str, Any]:
         normalized = str(address).strip()
@@ -304,6 +316,49 @@ class AnalysisSession:
     def list_memory_maps(self) -> dict[str, Any]:
         return self._forward("list_memory_maps", self.backend.list_memory_maps())
 
+    def _resolve_breakpoint_address(
+        self,
+        *,
+        address: str | None,
+        module: str | None,
+        offset: int | str | None,
+        symbol: str | None,
+    ) -> tuple[int, dict[str, Any]]:
+        if address is not None:
+            if module is not None or offset is not None or symbol is not None:
+                raise InvalidStateError("address breakpoints cannot include module, offset, or symbol")
+            normalized = str(address).strip()
+            if normalized == "":
+                raise InvalidStateError("breakpoint address must be non-empty")
+            return self._parse_address(normalized), {}
+
+        if offset is not None:
+            if symbol is not None:
+                raise InvalidStateError("module+offset breakpoints cannot include symbol")
+            if module is None or str(module).strip() == "":
+                raise InvalidStateError("breakpoint module must be non-empty")
+            module_name = str(module).strip()
+            module_base, module_path = self._resolve_module_base(module_name)
+            offset_value = self._parse_address(offset)
+            address_value = module_base + offset_value
+            return address_value, {
+                "module": module_name,
+                "module_path": module_path,
+                "module_base": hex(module_base),
+                "offset": hex(offset_value),
+            }
+
+        if symbol is None:
+            raise InvalidStateError("provide exactly one breakpoint target: address, module+offset, or symbol")
+        symbol_name = str(symbol).strip()
+        if symbol_name == "":
+            raise InvalidStateError("breakpoint symbol must be non-empty")
+        module_name = str(module).strip() if module is not None else None
+        if module_name is not None and module_name == "":
+            raise InvalidStateError("breakpoint module must be non-empty")
+        address_value, resolved = self._resolve_symbol_breakpoint(symbol_name, module_name)
+        return address_value, resolved
+
     def take_snapshot(self, name: str | None = None) -> dict[str, Any]:
         response = self._forward("take_snapshot", self.backend.take_snapshot(name))
         snapshot_result = response["result"]
@@ -463,7 +518,11 @@ class AnalysisSession:
         }
 
     @staticmethod
-    def _parse_address(address: str) -> int:
+    def _parse_address(address: int | str) -> int:
+        if isinstance(address, bool):
+            raise InvalidStateError(f"invalid address: {address!r}")
+        if isinstance(address, int):
+            return address
         try:
             return int(address, 0)
         except Exception as exc:  # noqa: BLE001
@@ -553,6 +612,195 @@ class AnalysisSession:
             if len(items) >= max_count:
                 break
         return items
+
+    @staticmethod
+    def _read_plt_symbols(
+        target: str,
+        *,
+        elf_type: str,
+        load_base: int,
+        max_count: int,
+        name_filter: str | None,
+        existing_names: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        result = subprocess.run(
+            ["objdump", "-d", "-j", ".plt", "-j", ".plt.sec", target],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        items: list[dict[str, Any]] = []
+        seen = set(existing_names or ())
+        needle = name_filter.lower() if isinstance(name_filter, str) and name_filter else None
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if not line or "<" not in line or ">:" not in line:
+                continue
+            left, rest = line.split("<", 1)
+            name = rest.split(">:", 1)[0].strip()
+            if name in {".plt", ".plt.got", ".plt.sec"}:
+                continue
+            if needle and needle not in name.lower():
+                continue
+            if name in seen:
+                continue
+            try:
+                symbol_addr = int(left, 16)
+            except ValueError:
+                continue
+            loaded_address = symbol_addr if elf_type == "EXEC" else load_base + symbol_addr
+            items.append(
+                {
+                    "name": name,
+                    "table": ".plt",
+                    "value": f"0x{symbol_addr:x}",
+                    "loaded_address": hex(loaded_address),
+                    "size": 0,
+                    "type": "FUNC",
+                    "bind": "GLOBAL",
+                    "visibility": "DEFAULT",
+                    "section": ".plt",
+                }
+            )
+            seen.add(name)
+            if len(items) >= max_count:
+                break
+        return items
+
+    def _resolve_module_base(self, module: str) -> tuple[int, str | None]:
+        regions = self._memory_map_regions()
+        matches = self._matching_module_regions(module, regions)
+        if not matches:
+            raise InvalidStateError(f"module not found in memory maps: {module}")
+
+        candidates: list[tuple[int, str | None]] = []
+        for region in matches:
+            start = self._parse_map_int(region.get("start"))
+            file_offset = self._parse_map_int(region.get("offset")) or 0
+            if start is None:
+                continue
+            candidates.append((start - file_offset, self._region_path(region)))
+        if not candidates:
+            raise InvalidStateError(f"unable to resolve module base: {module}")
+        base, path = min(candidates, key=lambda item: item[0])
+        return base, path
+
+    def _resolve_symbol_breakpoint(self, symbol: str, module: str | None) -> tuple[int, dict[str, Any]]:
+        target = self.state.target
+        module_base = 0
+        module_path: str | None = None
+        if module is None:
+            if not isinstance(target, str) or target == "":
+                raise InvalidStateError("session target is not available")
+            symbol_target = target
+            elf_type = self._read_elf_type(symbol_target)
+            if elf_type == "DYN":
+                regions = self._memory_map_regions()
+                candidates = self._resolve_pie_bases(target=symbol_target, regions=regions)
+                if not candidates:
+                    raise InvalidStateError("unable to resolve PIE load base from memory maps")
+                module_base = min(candidates)
+        else:
+            module_base, module_path = self._resolve_module_base(module)
+            if module_path is None:
+                raise InvalidStateError(f"module path is not available for symbol lookup: {module}")
+            symbol_target = module_path
+            elf_type = self._read_elf_type(symbol_target)
+
+        matches = self._read_elf_symbols(
+            symbol_target,
+            elf_type=elf_type,
+            load_base=module_base,
+            max_count=4096,
+            name_filter=symbol,
+        )
+        exact = [item for item in matches if self._symbol_name_matches(str(item.get("name", "")), symbol)]
+        if not exact and len(matches) < 4096:
+            matches.extend(
+                self._read_plt_symbols(
+                    symbol_target,
+                    elf_type=elf_type,
+                    load_base=module_base,
+                    max_count=4096 - len(matches),
+                    name_filter=symbol,
+                    existing_names={str(item.get("name")) for item in matches},
+                )
+            )
+            exact = [item for item in matches if self._symbol_name_matches(str(item.get("name", "")), symbol)]
+
+        resolved_by_address: dict[str, dict[str, Any]] = {}
+        for item in exact:
+            loaded_address = item.get("loaded_address")
+            if isinstance(loaded_address, str):
+                resolved_by_address.setdefault(loaded_address.lower(), item)
+        resolved = list(resolved_by_address.values())
+        if not resolved:
+            raise InvalidStateError(f"symbol not found or not loaded: {symbol}")
+        if len(resolved) > 1:
+            names = ", ".join(str(item.get("name")) for item in resolved[:5])
+            raise InvalidStateError(f"ambiguous symbol {symbol!r}; matches: {names}")
+
+        item = resolved[0]
+        address = self._parse_address(str(item["loaded_address"]))
+        payload: dict[str, Any] = {
+            "symbol": symbol,
+            "matched_symbol": item.get("name"),
+            "module_base": hex(module_base),
+            "symbol_value": item.get("value"),
+        }
+        if module is not None:
+            payload["module"] = module
+            payload["module_path"] = module_path
+        return address, payload
+
+    def _memory_map_regions(self) -> list[dict[str, Any]]:
+        maps_result = self.list_memory_maps()["result"]
+        regions = maps_result.get("maps", {}).get("regions", [])
+        return [item for item in regions if isinstance(item, dict)] if isinstance(regions, list) else []
+
+    @staticmethod
+    def _region_path(region: dict[str, Any]) -> str | None:
+        for key in ("path", "name"):
+            value = region.get(key)
+            if isinstance(value, str) and value.strip() and not value.strip().startswith("["):
+                return value.strip()
+        return None
+
+    @classmethod
+    def _matching_module_regions(cls, module: str, regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        module_text = module.strip()
+        module_real = os.path.realpath(module_text)
+        module_base = os.path.basename(module_real)
+        matches: list[dict[str, Any]] = []
+        for region in regions:
+            path = cls._region_path(region)
+            if path is None:
+                continue
+            path_real = os.path.realpath(path)
+            path_base = os.path.basename(path_real)
+            if (
+                path == module_text
+                or path_real == module_real
+                or path_base == module_base
+                or path_base.startswith(f"{module_base}.")
+            ):
+                matches.append(region)
+        return matches
+
+    @staticmethod
+    def _parse_map_int(value: Any) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value, 0)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _symbol_name_matches(candidate: str, requested: str) -> bool:
+        return candidate == requested or candidate.split("@", 1)[0] == requested
 
     @staticmethod
     def _resolve_pie_bases(target: str, regions: Any) -> list[int]:
